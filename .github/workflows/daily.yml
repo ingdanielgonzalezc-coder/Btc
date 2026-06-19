@@ -1,0 +1,35 @@
+name: BTC paper trading — daily
+
+on:
+  schedule:
+    - cron: "30 0 * * *"     # 00:30 UTC, después de que cierra la vela diaria (00:00 UTC)
+  workflow_dispatch:          # permite gatillarlo a mano desde la pestaña "Actions"
+
+permissions:
+  contents: read
+
+# Evita que dos corridas se pisen (p.ej. el cron y un dispatch manual a la vez)
+concurrency:
+  group: btc-paper-daily
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install pandas numpy yfinance gspread google-auth
+
+      - name: Correr cómputo diario
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python daily_run.py

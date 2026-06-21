@@ -149,7 +149,8 @@ def _fetch_yfinance():
 
 
 def _fetch_coinbase():
-    """Fallback geo-abierto. Endpoint público de velas diarias (máx ~300 por request)."""
+    """Coinbase Exchange (exchange real, dato 24/7 fresco). Velas diarias,
+    máx ~300 por request -> se pagina en tramos de 290 días."""
     import urllib.request
 
     start = pd.Timestamp(_download_start())
@@ -160,10 +161,14 @@ def _fetch_coinbase():
     while cursor < end:
         c_end = min(cursor + chunk, end)
         url = (f"https://api.exchange.coinbase.com/products/{PRICE_TICKER}/candles"
-               f"?granularity=86400&start={cursor.isoformat()}&end={c_end.isoformat()}")
+               f"?granularity=86400"
+               f"&start={cursor.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+               f"&end={c_end.strftime('%Y-%m-%dT%H:%M:%SZ')}")
         req = urllib.request.Request(url, headers={"User-Agent": "btc-paper/1.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode())
+        if isinstance(data, dict):                 # respuesta de error: {"message": ...}
+            raise RuntimeError(f"Coinbase: {data.get('message', data)}")
         for candle in data:                        # [time, low, high, open, close, volume]
             ts = pd.Timestamp(candle[0], unit="s")
             rows[ts] = candle[4]
@@ -175,15 +180,16 @@ def _fetch_coinbase():
 
 
 def fetch_prices():
-    """yfinance primaria; Coinbase de fallback. Devuelve pd.Series de cierres cerrados."""
+    """Coinbase primaria (exchange real, dato fresco 24/7, sin retraso de Yahoo);
+    yfinance de respaldo. Devuelve pd.Series de cierres ya cerrados."""
     try:
-        close = _fetch_yfinance()
+        close = _fetch_coinbase()
         if len(close) >= max(LOOKBACKS) + 5:
             return close
-        print("yfinance devolvió pocos datos; intentando Coinbase…")
+        print("Coinbase devolvió pocos datos; intentando yfinance…")
     except Exception as e:                          # noqa: BLE001
-        print(f"yfinance falló ({e}); intentando Coinbase…")
-    return _fetch_coinbase()
+        print(f"Coinbase falló ({e}); intentando yfinance…")
+    return _fetch_yfinance()
 
 
 # ============================================================================

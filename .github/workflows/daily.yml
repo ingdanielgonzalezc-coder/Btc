@@ -27,7 +27,10 @@ jobs:
 
       - name: Instalar dependencias
         run: pip install pandas numpy yfinance gspread google-auth
-
+        
+      - name: Ver versiones instaladas
+        run: pip freeze
+        
       - name: Correr cómputo diario
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}

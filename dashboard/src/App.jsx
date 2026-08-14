@@ -6,8 +6,23 @@ import {
 } from "recharts";
 
 /* CSV publicado del Google Sheet. En Vercel se define como variable de entorno
-   VITE_CSV_URL; en local puedes usar un archivo .env (ver .env.example). */
+   VITE_CSV_URL; en local puedes usar un archivo .env (ver .env.example).
+   Apuntar a la pestaña track_record_v21 (cada pestaña tiene su propio gid). */
 const ENV_URL = import.meta.env.VITE_CSV_URL || "";
+
+/* Supuestos del motor, declarados aquí para poder mostrarlos en pantalla.
+   NO son observaciones: el cash al 4% y los 7 bps por unidad de turnover son
+   hipótesis del backtest. Un tercero escéptico ataca justo ahí. */
+const STABLE_APY = 0.04;
+const CASH_D = Math.pow(1 + STABLE_APY, 1 / 365) - 1;
+const COST_BPS = 7;
+
+/* Sharpe y Calmar anualizados sobre muestras chicas son ruido: con 39 retornos
+   el Calmar daba 19. Se ocultan hasta tener muestra suficiente. */
+const MIN_DAYS_ANNUALIZED = 180;
+
+/* Días sin fila nueva antes de marcar el dato como viejo. */
+const STALE_AFTER_DAYS = 2;
 
 /* ------------------------------------------------------------------ *
  *  Helpers
@@ -32,25 +47,50 @@ const pct = (x, d = 1) => (x == null || Number.isNaN(x) ? "—" : `${(x * 100).t
 const num = (x, d = 2) => (x == null || Number.isNaN(x) ? "—" : x.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }));
 const money = (x) => (x == null || Number.isNaN(x) ? "—" : "$" + x.toLocaleString("en-US", { maximumFractionDigits: 0 }));
 
+/* Lee v2.1 (equity / signal_weight / cash_equity) y v2.0 (strat_equity /
+   new_weight) con el mismo código, para poder comparar ambos registros. */
+function pick(row, ...keys) {
+  for (const k of keys) if (row[k] != null && row[k] !== "") return row[k];
+  return undefined;
+}
+
 function parseRows(rows) {
-  return rows
+  const clean = rows
     .filter((r) => r.date)
-    .map((r) => ({
-      date: String(r.date).trim(),
-      btc: toNum(r.btc_price),
-      trend: toNum(r.trend_score),
-      volScalar: toNum(r.vol_scalar),
-      target: toNum(r.target_weight),
-      weight: toNum(r.new_weight),
-      action: String(r.action || "").trim().toUpperCase(),
-      tradePct: toNum(r.trade_pct),
-      dailyRet: toNum(r.daily_return),
-      strat: toNum(r.strat_equity),
-      hodl: toNum(r.hodl_equity),
-      dd: toNum(r.drawdown),
-    }))
-    .filter((r) => Number.isFinite(r.strat))
-    .map((r) => ({ ...r, inMarket: r.weight > 1e-9 }));
+    .map((r) => {
+      const weightSignal = toNum(pick(r, "signal_weight", "new_weight"));
+      const weightReal = toNum(pick(r, "weight_post"));
+      return {
+        date: String(r.date).trim(),
+        btc: toNum(r.btc_price),
+        trend: toNum(r.trend_score),
+        volScalar: toNum(r.vol_scalar),
+        target: toNum(r.target_weight),
+        weight: weightSignal,
+        // v2.1 expone el peso REAL (deriva con el precio); v2.0 solo el teórico
+        weightReal: Number.isFinite(weightReal) ? weightReal : weightSignal,
+        action: String(r.action || "").trim().toUpperCase(),
+        tradePct: toNum(r.trade_pct),
+        dailyRet: toNum(r.daily_return),
+        strat: toNum(pick(r, "equity", "strat_equity")),
+        hodl: toNum(r.hodl_equity),
+        cash: toNum(pick(r, "cash_equity")),
+        dd: toNum(r.drawdown),
+        source: String(pick(r, "price_source") || "").trim(),
+      };
+    })
+    .filter((r) => Number.isFinite(r.strat));
+
+  /* FIX CRÍTICO. El gap-fill del motor appendea la fecha faltante al FINAL del
+     Sheet, así que el orden de llegada no es cronológico. computeMetrics y
+     marketSpans asumen data[0] = inicio y data[n-1] = fin: sin ordenar, un solo
+     hueco rellenado corrompe CAGR, retorno total, spans y gráficos.
+     Se ordena y se deduplica por fecha (gana la última aparición). */
+  const byDate = new Map();
+  for (const r of clean) byDate.set(r.date, r);
+  return [...byDate.values()]
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .map((r) => ({ ...r, inMarket: r.weightReal > 1e-9 }));
 }
 
 function computeMetrics(data) {
@@ -60,26 +100,46 @@ function computeMetrics(data) {
 
   const stratRets = [];
   for (let i = 1; i < data.length; i++) stratRets.push(data[i].strat / data[i - 1].strat - 1);
-  const mean = stratRets.reduce((a, b) => a + b, 0) / stratRets.length;
-  const variance = stratRets.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, stratRets.length - 1);
+
+  /* Sharpe EN EXCESO sobre el cash. Sin restarlo, en régimen defensivo el
+     numerador es el APY asumido y el denominador es ruido de los pocos días
+     con exposición: el número deja de significar algo (daba 6.60 cuando el
+     exceso real era -4.75). */
+  const excess = stratRets.map((r) => r - CASH_D);
+  const mean = excess.reduce((a, b) => a + b, 0) / excess.length;
+  const variance = excess.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, excess.length - 1);
   const std = Math.sqrt(variance);
 
   const cagr = Math.pow(last.strat / first.strat, 365 / days) - 1;
   const hodlCagr = Math.pow(last.hodl / first.hodl, 365 / days) - 1;
   const maxDD = Math.min(0, ...data.map((d) => d.dd));
-  const hodlMaxDD = Math.min(...data.map((d, i) => {
-    const peak = Math.max(...data.slice(0, i + 1).map((x) => x.hodl));
-    return d.hodl / peak - 1;
-  }));
-  const inMarketShare = data.filter((d) => d.inMarket).length / data.length;
 
-  const sharpe = std > 1e-9 ? (mean / std) * Math.sqrt(365) : null;
-  const calmar = maxDD < -1e-6 ? cagr / Math.abs(maxDD) : null;
+  // Drawdown de HODL en O(n) con peak acumulado (antes era O(n²)).
+  let peak = -Infinity, hodlMaxDD = 0;
+  for (const d of data) {
+    peak = Math.max(peak, d.hodl);
+    hodlMaxDD = Math.min(hodlMaxDD, d.hodl / peak - 1);
+  }
+
+  const inMarketShare = data.filter((d) => d.inMarket).length / data.length;
+  const enoughSample = days >= MIN_DAYS_ANNUALIZED;
+
+  /* Retorno del cash: preferir la columna del motor (v2.1); si no está,
+     reconstruirlo con el mismo APY asumido. */
+  const cashTotal = Number.isFinite(last.cash) && Number.isFinite(first.cash)
+    ? last.cash / first.cash - 1
+    : Math.pow(1 + CASH_D, days) - 1;
+  const totalStrat = last.strat / first.strat - 1;
 
   return {
-    cagr, hodlCagr, maxDD, hodlMaxDD, inMarketShare, sharpe, calmar,
-    totalStrat: last.strat / first.strat - 1,
+    cagr, hodlCagr, maxDD, hodlMaxDD, inMarketShare, enoughSample,
+    sharpe: enoughSample && std > 1e-9 ? (mean / std) * Math.sqrt(365) : null,
+    calmar: enoughSample && maxDD < -1e-6 ? cagr / Math.abs(maxDD) : null,
+    totalStrat,
     totalHodl: last.hodl / first.hodl - 1,
+    cashTotal,
+    // Lo que aportó realmente operar, contra no haber hecho nada.
+    excessOverCash: totalStrat - cashTotal,
     days: Math.round(days), n: data.length,
   };
 }
@@ -97,31 +157,14 @@ function marketSpans(data) {
   return spans;
 }
 
-function demoData() {
-  const out = [];
-  let price = 42000, strat = 1, hodl = 1, peak = 1;
-  const cashD = Math.pow(1.04, 1 / 365) - 1;
-  let rng = 7;
-  const rand = () => { rng = (rng * 1103515245 + 12345) & 0x7fffffff; return rng / 0x7fffffff - 0.5; };
-  const start = new Date("2025-09-20");
-  for (let i = 0; i < 240; i++) {
-    const date = new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10);
-    let drift = i < 90 ? 0.004 : i < 150 ? -0.006 : 0.0035;
-    const ret = drift + rand() * 0.045;
-    price *= 1 + ret;
-    hodl *= 1 + ret;
-    const weight = i < 80 ? 0.9 : i < 100 ? 0.4 : i < 165 ? 0 : 0.85;
-    const sret = weight * ret + (1 - weight) * cashD;
-    strat *= 1 + sret;
-    peak = Math.max(peak, strat);
-    out.push({
-      date, btc_price: price, trend_score: weight > 0 ? (weight > 0.6 ? 1 : 0.5) : 0,
-      vol_scalar: 1, target_weight: weight, new_weight: weight,
-      action: "MANTENER", trade_pct: 0, daily_return: ret,
-      strat_equity: strat, hodl_equity: hodl, drawdown: strat / peak - 1,
-    });
-  }
-  return out;
+/* Días desde la última fila. Una herramienta de decisión debe decir si el dato
+   que muestra sigue vigente. */
+function daysStale(lastDate) {
+  if (!lastDate) return null;
+  const then = new Date(lastDate + "T00:00:00Z");
+  const today = new Date();
+  const utcToday = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  return Math.floor((utcToday - then.getTime()) / 86400000);
 }
 
 /* ------------------------------------------------------------------ *
@@ -155,6 +198,19 @@ function StatusBadge({ inMarket }) {
       background: inMarket ? "rgba(232,179,59,.10)" : "transparent",
     }}>
       ● {inMarket ? "IN MARKET" : "IN CASH"}
+    </span>
+  );
+}
+
+function StaleBadge({ stale }) {
+  if (stale == null || stale <= STALE_AFTER_DAYS) return null;
+  return (
+    <span style={{
+      fontSize: 11, fontWeight: 600, letterSpacing: ".08em", padding: "4px 10px",
+      borderRadius: 999, border: "1px solid var(--sell)", color: "var(--sell)",
+      background: "rgba(217,139,106,.10)", marginLeft: 8,
+    }}>
+      ● STALE · {stale}d
     </span>
   );
 }
@@ -194,7 +250,8 @@ function ChartTooltip({ active, payload, label }) {
       <div style={{ color: "var(--muted)", marginBottom: 4 }}>{label}</div>
       <div style={{ color: "var(--gold)" }}>Strategy &nbsp;{num(p.strat, 4)}×</div>
       <div style={{ color: "var(--steel)" }}>Buy &amp; hold &nbsp;{num(p.hodl, 4)}×</div>
-      <div style={{ color: "var(--muted)", marginTop: 4 }}>{p.inMarket ? `in market · ${pct(p.weight, 0)}` : "in cash"} · {money(p.btc)}</div>
+      {Number.isFinite(p.cash) && <div style={{ color: "var(--muted)" }}>Cash &nbsp;{num(p.cash, 4)}×</div>}
+      <div style={{ color: "var(--muted)", marginTop: 4 }}>{p.inMarket ? `in market · ${pct(p.weightReal, 0)}` : "in cash"} · {money(p.btc)}</div>
     </div>
   );
 }
@@ -204,8 +261,11 @@ function ChartTooltip({ active, payload, label }) {
  * ------------------------------------------------------------------ */
 export default function App() {
   const [url, setUrl] = useState(ENV_URL);
-  const [rows, setRows] = useState(demoData());
-  const [source, setSource] = useState("demo");
+  /* Arranca VACÍO, no con demo. Un dashboard que decide posiciones no puede
+     mostrar datos sintéticos como si fueran el registro: si el CSV falla, la
+     pantalla lo dice en vez de rellenar. El demo sigue disponible a mano. */
+  const [rows, setRows] = useState([]);
+  const [source, setSource] = useState("empty");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [logScale, setLogScale] = useState(true);
@@ -214,6 +274,7 @@ export default function App() {
   const metrics = useMemo(() => computeMetrics(data), [data]);
   const spans = useMemo(() => marketSpans(data), [data]);
   const last = data[data.length - 1];
+  const stale = useMemo(() => (source === "live" && last ? daysStale(last.date) : null), [source, last]);
 
   async function loadUrl(target) {
     const u = (target || "").trim();
@@ -225,10 +286,12 @@ export default function App() {
       const text = await res.text();
       const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
       const clean = parseRows(parsed.data);
-      if (!clean.length) throw new Error("No encontré filas válidas. ¿Es el CSV de la pestaña track_record?");
+      if (!clean.length) throw new Error("No encontré filas válidas. ¿Es el CSV de la pestaña track_record_v21?");
       setRows(parsed.data); setSource("live");
     } catch (e) {
-      setError(`No pude cargar el CSV (${e.message}).`);
+      /* No se conserva lo anterior ni se cae a demo: se vacía y se explica. */
+      setRows([]); setSource("empty");
+      setError(`No pude cargar el CSV (${e.message}). Revisa que la pestaña esté publicada.`);
     } finally { setLoading(false); }
   }
 
@@ -240,6 +303,8 @@ export default function App() {
     const step = Math.ceil(data.length / 6);
     return data.filter((_, i) => i % step === 0).map((d) => d.date);
   }, [data]);
+
+  const hasCash = data.some((d) => Number.isFinite(d.cash));
 
   return (
     <div className="btcd">
@@ -254,8 +319,11 @@ export default function App() {
         </div>
         <div style={{ textAlign: "right" }}>
           {last && <StatusBadge inMarket={last.inMarket} />}
+          <StaleBadge stale={stale} />
           <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
-            {source === "demo" ? "demo data" : "live"} · last {last ? last.date : "—"}
+            {source === "live" ? "live" : source === "demo" ? "demo data" : "no data"}
+            {last ? ` · last ${last.date}` : ""}
+            {last && last.source ? ` · ${last.source}` : ""}
           </div>
         </div>
       </div>
@@ -273,13 +341,18 @@ export default function App() {
             padding: "9px 18px", fontWeight: 600, cursor: "pointer", fontSize: 13 }}>
           {loading ? "Loading…" : "Load"}
         </button>
-        <button onClick={() => { setRows(demoData()); setSource("demo"); setError(""); }}
-          style={{ background: "transparent", color: "var(--muted)", border: "1px solid var(--line)",
-            borderRadius: 7, padding: "9px 14px", cursor: "pointer", fontSize: 13 }}>
-          Demo
-        </button>
       </div>
       {error && <div style={{ color: "var(--sell)", fontSize: 12, marginBottom: 14 }}>{error}</div>}
+
+      {!last && !loading && (
+        <div className="panel" style={{ padding: "36px 20px", textAlign: "center", marginBottom: 14 }}>
+          <div className="display" style={{ fontSize: 17, fontWeight: 500 }}>No hay datos cargados</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>
+            Pega arriba el CSV publicado de la pestaña <code>track_record_v21</code>.<br />
+            Si el registro aún no tiene filas, aparecerán al cerrar la primera vela.
+          </div>
+        </div>
+      )}
 
       {last && (
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", marginBottom: 14 }}>
@@ -298,7 +371,7 @@ export default function App() {
             <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>target {pct(last.target, 0)}</div>
           </div>
           <div className="panel" style={{ padding: "14px 16px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-            <WeightGauge weight={last.weight} />
+            <WeightGauge weight={last.weightReal} />
           </div>
           <div className="panel" style={{ padding: "14px 16px" }}>
             <div className="eyebrow">Signal</div>
@@ -310,6 +383,7 @@ export default function App() {
         </div>
       )}
 
+      {last && (
       <div className="panel" style={{ padding: 16, marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
           <div>
@@ -317,6 +391,7 @@ export default function App() {
             <div style={{ fontSize: 12, marginTop: 4 }}>
               <span style={{ color: "var(--gold)" }}>● strategy {metrics ? pct(metrics.totalStrat) : ""}</span>
               <span style={{ color: "var(--steel)", marginLeft: 14 }}>● buy &amp; hold {metrics ? pct(metrics.totalHodl) : ""}</span>
+              {hasCash && <span style={{ color: "var(--muted)", marginLeft: 14 }}>● cash {metrics ? pct(metrics.cashTotal) : ""}</span>}
             </div>
           </div>
           <div style={{ display: "flex", gap: 4 }}>
@@ -340,6 +415,7 @@ export default function App() {
               tickFormatter={(v) => `${v.toFixed(2)}×`} tick={{ className: "tick" }} stroke="var(--line)" width={48} />
             <Tooltip content={<ChartTooltip />} />
             <Line type="monotone" dataKey="hodl" stroke="var(--steel)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            {hasCash && <Line type="monotone" dataKey="cash" stroke="var(--muted)" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />}
             <Line type="monotone" dataKey="strat" stroke="var(--gold)" strokeWidth={2} dot={false} isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
@@ -347,7 +423,9 @@ export default function App() {
           Gold bands = strategy in market. Unshaded = defensive in cash.
         </div>
       </div>
+      )}
 
+      {last && (
       <div className="panel" style={{ padding: 16, marginBottom: 14 }}>
         <div className="eyebrow" style={{ marginBottom: 6 }}>Drawdown — strategy</div>
         <ResponsiveContainer width="100%" height={140}>
@@ -366,25 +444,39 @@ export default function App() {
           </AreaChart>
         </ResponsiveContainer>
       </div>
-
-      {metrics && (
-        <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", marginBottom: 14 }}>
-          <Metric label="CAGR (to date)" value={pct(metrics.cagr)} sub={`HODL ${pct(metrics.hodlCagr)}`} accent="var(--gold)" />
-          <Metric label="Sharpe" value={metrics.sharpe == null ? "—" : num(metrics.sharpe, 2)} sub={metrics.sharpe == null ? "needs more data" : "annualized"} />
-          <Metric label="Calmar" value={metrics.calmar == null ? "—" : num(metrics.calmar, 2)} sub={metrics.calmar == null ? "no drawdown yet" : "CAGR / maxDD"} />
-          <Metric label="Max drawdown" value={pct(metrics.maxDD)} sub={`HODL ${pct(metrics.hodlMaxDD)}`} accent="var(--sell)" />
-          <Metric label="Time in market" value={pct(metrics.inMarketShare, 0)} sub={`${metrics.n} days`} />
-        </div>
       )}
 
+      {metrics && (
+        <>
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", marginBottom: 8 }}>
+            <Metric label="Total return" value={pct(metrics.totalStrat, 2)} sub={`HODL ${pct(metrics.totalHodl, 2)}`} accent="var(--gold)" />
+            <Metric label="vs cash" value={pct(metrics.excessOverCash, 2)}
+              sub={`cash ${pct(metrics.cashTotal, 2)} · ${STABLE_APY * 100}% APY assumed`}
+              accent={metrics.excessOverCash >= 0 ? "var(--buy)" : "var(--sell)"} />
+            <Metric label="Max drawdown" value={pct(metrics.maxDD, 2)} sub={`HODL ${pct(metrics.hodlMaxDD, 2)}`} accent="var(--sell)" />
+            <Metric label="Time in market" value={pct(metrics.inMarketShare, 0)} sub={`${metrics.n} days`} />
+            <Metric label="Sharpe" value={metrics.sharpe == null ? "—" : num(metrics.sharpe, 2)}
+              sub={metrics.enoughSample ? "excess over cash, annualized" : `needs ${MIN_DAYS_ANNUALIZED}d · have ${metrics.days}d`} />
+            <Metric label="Calmar" value={metrics.calmar == null ? "—" : num(metrics.calmar, 2)}
+              sub={metrics.enoughSample ? "CAGR / maxDD" : `needs ${MIN_DAYS_ANNUALIZED}d · have ${metrics.days}d`} />
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 14, lineHeight: 1.6 }}>
+            Assumed, not observed: cash at {STABLE_APY * 100}% APY and {COST_BPS} bps per unit of turnover
+            (high-volume tier; retail taker runs 25–60 bps). Annualized ratios are hidden until {MIN_DAYS_ANNUALIZED} days
+            of record — below that they are noise.
+          </div>
+        </>
+      )}
+
+      {last && (
       <div className="panel" style={{ padding: 16 }}>
         <div className="eyebrow" style={{ marginBottom: 10 }}>Recent decisions</div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ color: "var(--muted)" }}>
-                {["Date", "BTC", "Trend", "Target", "Position", "Call", "Strategy"].map((h, i) => (
-                  <th key={h} style={{ padding: "6px 8px", textAlign: i === 0 || i === 5 ? "left" : "right", fontWeight: 500, borderBottom: "1px solid var(--line)" }}>{h}</th>
+                {["Date", "BTC", "Trend", "Target", "Signal", "Actual", "Call", "Equity"].map((h, i) => (
+                  <th key={h} style={{ padding: "6px 8px", textAlign: i === 0 || i === 6 ? "left" : "right", fontWeight: 500, borderBottom: "1px solid var(--line)" }}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -396,6 +488,8 @@ export default function App() {
                   <td style={{ padding: "7px 8px", textAlign: "right", color: "var(--gold)" }}>{num(d.trend, 2)}</td>
                   <td style={{ padding: "7px 8px", textAlign: "right" }}>{pct(d.target, 0)}</td>
                   <td style={{ padding: "7px 8px", textAlign: "right" }}>{pct(d.weight, 0)}</td>
+                  {/* Peso REAL: deriva con el precio entre rebalanceos */}
+                  <td style={{ padding: "7px 8px", textAlign: "right", color: "var(--muted)" }}>{pct(d.weightReal, 1)}</td>
                   <td style={{ padding: "7px 8px", color: actionColor(d.action) }}>{actionLabel(d.action)}</td>
                   <td style={{ padding: "7px 8px", textAlign: "right" }}>{num(d.strat, 4)}×</td>
                 </tr>
@@ -404,6 +498,7 @@ export default function App() {
           </table>
         </div>
       </div>
+      )}
 
       <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 18 }}>
         Paper trading · not financial advice

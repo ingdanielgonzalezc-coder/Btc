@@ -1,0 +1,20 @@
+# Dependencias CONGELADAS — v2.1
+#
+# Versiones capturadas con `pip freeze` en el runner de GitHub Actions
+# (ubuntu-latest, Python 3.12) el 2026-08-13.
+#
+# Sin pins, "motor congelado" es una afirmación falsa: un cambio de default en
+# pandas puede mover la señal sin que nadie lo note. Estas versiones son las que
+# validan el test de equivalencia de señal contra el registro archivado de v2.0.
+#
+# Para actualizar: hacerlo deliberadamente, correr la suite completa, y verificar
+# que test_signal_equivalence_* sigue en verde ANTES de mergear.
+
+pandas==3.0.5
+numpy==2.5.2
+yfinance==1.6.0
+gspread==6.2.1
+google-auth==2.56.3
+
+# Solo para tests; no se usa en producción.
+pytest==8.3.4

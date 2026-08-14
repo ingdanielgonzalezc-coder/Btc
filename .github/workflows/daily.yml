@@ -28,11 +28,24 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
+      # Bloquea la escritura al Sheet si algo se rompió. Incluye el test de
+      # equivalencia de señal contra el registro archivado de v2.0.
       - name: Tests
         run: pytest -q
-        
-      - name: Correr cómputo diario
+
+      # v2.0 — motor congelado, sigue corriendo en su pestaña para comparación.
+      # continue-on-error: un fallo del legado NO puede impedir que v2.1 escriba.
+      - name: Correr v2.0 (legado)
+        continue-on-error: true
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
         run: python daily_run.py
+
+      # v2.1 — registro oficial. Si falla, la corrida falla y llega el email.
+      - name: Correr v2.1
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python daily_run_v21.py

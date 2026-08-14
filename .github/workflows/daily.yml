@@ -28,21 +28,6 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
-      - name: Volcar snapshot de precios (TEMPORAL)
-        run: |
-          python - <<'PY'
-          import daily_run as v20
-          px = v20.fetch_prices()
-          px.to_csv("prices_snapshot.csv", header=["btc_price"])
-          print(f"{len(px)} filas: {px.index.min().date()} -> {px.index.max().date()}")
-          PY
-
-      - name: Subir snapshot como artifact (TEMPORAL)
-        uses: actions/upload-artifact@v4
-        with:
-          name: prices-snapshot
-          path: prices_snapshot.csv
-
       - name: Tests
         run: pytest -q
         

@@ -26,10 +26,10 @@ jobs:
           python-version: "3.12"
 
       - name: Instalar dependencias
-        run: pip install pandas numpy yfinance gspread google-auth
-        
-      - name: Ver versiones instaladas
-        run: pip freeze
+        run: pip install -r requirements.txt
+
+      - name: Tests
+        run: pytest -q
         
       - name: Correr cómputo diario
         env:

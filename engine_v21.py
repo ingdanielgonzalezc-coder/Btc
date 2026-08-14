@@ -32,9 +32,9 @@ STABLE_APY = 0.04
 ANN        = 365
 
 # ===== CONFIG DEL DESPLIEGUE — congelar al lanzar =====
-# CONFIRMAR antes del primer push. Debe ser POSTERIOR al commit que congela v2.1
-# (§12 de la spec: el commit precede al registro, con GitHub como testigo).
-PAPER_START_V21 = "2026-08-10"
+# Lunes 17-ago-2026. Debe ser POSTERIOR al tag que congela v2.1 (§12 de la spec:
+# el commit precede al registro, con GitHub como testigo). NO hacer backfill.
+PAPER_START_V21 = "2026-08-17"
 WARMUP_DAYS     = 420
 SHEET_TAB_V21   = "track_record_v21"
 

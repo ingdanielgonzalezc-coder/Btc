@@ -37,7 +37,7 @@ jobs:
       - name: Tests V3
         id: tests_v3
         continue-on-error: true
-        run: pytest -q test_engine_v3.py test_daily_levels.py
+        run: pytest -q test_engine_v3.py test_daily_levels.py test_engine_exec.py
 
       # v2.0 — motor congelado, sigue corriendo en su pestaña para comparación.
       # continue-on-error: un fallo del legado NO puede impedir que v2.1 escriba.
@@ -77,3 +77,14 @@ jobs:
           SHEET_ID: ${{ secrets.SHEET_ID }}
           GITHUB_SHA: ${{ github.sha }}
         run: python daily_levels.py
+
+      # Registro paralelo con ejecución a las 05:00 UTC del día siguiente (v2.1 y V3).
+      # Mide el costo de no operar al cierre. Nunca bloquea nada.
+      - name: Registro de ejecución atrasada
+        if: always() && steps.tests_v3.outcome == 'success'
+        continue-on-error: true
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: python daily_run_exec.py

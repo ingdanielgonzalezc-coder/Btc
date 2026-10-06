@@ -260,3 +260,62 @@ def test_validate_daily_series_rejects_missing_start_and_bad_prices():
     s2 = s.copy(); s2.iloc[3] = 0.0
     with pytest.raises(ValueError, match="no válidos"):
         io21.validate_daily_series(s2)
+
+
+def test_validate_requires_last_expected_candle():
+    """Revisión 2: una serie truncada (sin la vela de ayer) no puede aprobar."""
+    s = pd.Series(np.linspace(1, 2, 10), index=pd.date_range("2026-01-01", periods=10, freq="D"))
+    io21.validate_daily_series(s, start="2026-01-01", end="2026-01-10")
+    with pytest.raises(ValueError, match="faltan 1"):
+        io21.validate_daily_series(s.iloc[:-1], start="2026-01-01", end="2026-01-10")
+
+
+def test_invalid_last_candle_is_not_silently_dropped():
+    """Revisión 2: un NaN en la última vela debe rechazarse, no desaparecer en la limpieza."""
+    idx = pd.date_range("2026-01-01", periods=10, freq="D")
+    raw = pd.Series(np.linspace(1, 2, 10), index=idx); raw.iloc[-1] = np.nan
+    cleaned = io21._clean_close_series(raw.copy(), drop_nan=False)
+    with pytest.raises(ValueError, match="no válidos"):
+        io21.validate_daily_series(cleaned, start="2026-01-01", end="2026-01-10")
+
+
+def _fake_coinbase(monkeypatch, start, end, drop=None, nan_at=None):
+    """Simula la API de Coinbase con velas diarias [start, end]."""
+    days = pd.date_range(start, end, freq="D")
+    candles = [[int(d.timestamp()), 1, 1, 1, 100.0 + i, 1] for i, d in enumerate(days)]
+    if drop is not None:
+        candles = [c for c in candles if pd.Timestamp(c[0], unit="s") != pd.Timestamp(drop)]
+    if nan_at is not None:
+        for c in candles:
+            if pd.Timestamp(c[0], unit="s") == pd.Timestamp(nan_at):
+                c[4] = None
+    def fake_http(url, timeout=30):
+        q = dict(p.split("=") for p in url.split("?")[1].split("&"))
+        a, b = pd.Timestamp(q["start"][:10]), pd.Timestamp(q["end"][:10])
+        return [c for c in candles if a <= pd.Timestamp(c[0], unit="s") <= b]
+    monkeypatch.setattr(io21, "_http_json", fake_http)
+    monkeypatch.setattr(io21, "_today_utc", lambda: pd.Timestamp(end) + pd.Timedelta(days=1))
+
+
+def test_fetch_prices_end_to_end(monkeypatch):
+    start = io21._download_start()
+    end = pd.Timestamp(start) + pd.Timedelta(days=400)
+    _fake_coinbase(monkeypatch, start, end)
+    close, src = io21.fetch_prices()
+    assert close.index[0] == pd.Timestamp(start) and close.index[-1] == end and src == "coinbase"
+
+
+def test_fetch_prices_rejects_missing_yesterday(monkeypatch):
+    start = io21._download_start()
+    end = pd.Timestamp(start) + pd.Timedelta(days=400)
+    _fake_coinbase(monkeypatch, start, end, drop=end)
+    with pytest.raises(ValueError, match="faltan 1"):
+        io21.fetch_prices()
+
+
+def test_fetch_prices_rejects_null_close(monkeypatch):
+    start = io21._download_start()
+    end = pd.Timestamp(start) + pd.Timedelta(days=400)
+    _fake_coinbase(monkeypatch, start, end, nan_at=end)
+    with pytest.raises(ValueError, match="no válidos"):
+        io21.fetch_prices()

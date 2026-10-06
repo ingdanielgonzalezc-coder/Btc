@@ -3,7 +3,10 @@ import numpy as np, pandas as pd
 ANN = 365
 import os
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Datos versionados en research/datos (CC BY-SA 4.0, ver LICENCIA-DATOS.md); data/ si se regeneran
 DATA = os.path.join(HERE, "data", "btc_daily_bitstamp.csv")
+if not os.path.exists(DATA):
+    DATA = os.path.join(HERE, "datos", "btc_daily_bitstamp.csv")
 
 def load_prices(end="2026-10-05"):
     d = pd.read_csv(DATA, index_col=0, parse_dates=True)
@@ -71,6 +74,9 @@ def simulate(px, target, cost=0.0015, cash_apy=0.0, rebalance="on_change", band=
         Orden cronológico: (1) cierre t: se marca el capital con las tenencias que
         había ANTES de operar; (2) después del cierre: se opera a exec_px[t].
         Si falta exec_px[t] en un día que debe operar, se lanza error (no se rellena).
+        Horizonte: el capital final es el del CIERRE del último día. Una operación
+        decidida ese cierre ocurriría después del horizonte y NO se ejecuta (ni su
+        costo); así el valor final y el último costo corresponden al mismo instante.
     rebalance: 'on_change' | 'band' | 'daily' (ver versión anterior)."""
     sl = slice(start, end)
     p = px.loc[sl].values; tw = target.loc[sl].values
@@ -88,6 +94,9 @@ def simulate(px, target, cost=0.0015, cash_apy=0.0, rebalance="on_change", band=
             w[t] = units * p[t] / eq[t]
         mark = ep[t]
         tgt = tw[t]
+        if delayed and t == n - 1:                    # fuera del horizonte de evaluación
+            prev_t = tgt
+            continue
         if rebalance == "on_change": do = (t == 0) or abs(tgt - prev_t) > 1e-12
         elif rebalance == "band":
             w_now = units * p[t] / (units * p[t] + cash)

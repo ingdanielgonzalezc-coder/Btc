@@ -62,17 +62,27 @@ def _today_utc():
     return pd.Timestamp.now(tz="UTC").normalize().tz_localize(None)
 
 
-def _clean_close_series(close):
+def _clean_close_series(close, drop_nan=True):
+    """Normaliza índice, ordena, deduplica y deja SOLO velas cerradas.
+    drop_nan=False conserva los NaN para que validate_daily_series los rechace
+    (descartarlos aquí haría desaparecer una vela inválida sin aviso)."""
     idx = pd.to_datetime(close.index)
     if getattr(idx, "tz", None) is not None:
         idx = idx.tz_convert("UTC").tz_localize(None)
     close.index = idx.normalize()
-    close = close[~close.index.duplicated(keep="last")].sort_index().dropna()
+    close = close[~close.index.duplicated(keep="last")].sort_index()
+    if drop_nan:
+        close = close.dropna()
     close = close[close.index < _today_utc()]      # SOLO velas cerradas
-    return close.astype(float)
+    return pd.to_numeric(close, errors="coerce").astype(float)
 
 
-def validate_daily_series(close, start=None):
+def expected_last_candle():
+    """La última vela cerrada que DEBE existir: la de ayer (UTC)."""
+    return _today_utc() - pd.Timedelta(days=1)
+
+
+def validate_daily_series(close, start=None, end=None):
     """Exige una vela por día calendario, precios finitos y positivos.
 
     Las señales usan shift(L) por POSICIÓN: si falta una vela, "hace 20 días" pasa
@@ -85,7 +95,10 @@ def validate_daily_series(close, start=None):
     if len(bad):
         raise ValueError(f"precios no válidos en {[d.strftime('%Y-%m-%d') for d in bad.index[:5]]}")
     first = pd.Timestamp(start) if start is not None else close.index[0]
-    full = pd.date_range(first, close.index[-1], freq="D")
+    last = pd.Timestamp(end) if end is not None else close.index[-1]
+    if close.index[-1] > last:
+        raise ValueError(f"vela posterior a la esperada: {close.index[-1].date()} > {last.date()}")
+    full = pd.date_range(first, last, freq="D")
     missing = full.difference(close.index)
     if len(missing):
         raise ValueError(f"faltan {len(missing)} vela(s) diaria(s): "
@@ -125,8 +138,10 @@ def fetch_prices():
     if not rows:
         raise RuntimeError("Coinbase no devolvió velas")
 
-    close = _clean_close_series(pd.Series(rows).sort_index())
-    validate_daily_series(close, start=_download_start())
+    close = _clean_close_series(pd.Series(rows, dtype="float64").sort_index(), drop_nan=False)
+    # completa desde el inicio de descarga hasta AYER, sin huecos, finita y positiva;
+    # si Coinbase aún no publica la vela de ayer, no se escribe y la próxima corrida la toma
+    validate_daily_series(close, start=_download_start(), end=expected_last_candle())
     if len(close) < max(e21.LOOKBACKS) + 5:
         raise RuntimeError(
             f"Coinbase devolvió {len(close)} velas; se requieren "

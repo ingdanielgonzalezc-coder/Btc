@@ -12,8 +12,8 @@ export const num = (x, d = 2) => (x == null || Number.isNaN(x) ? "—" : x.toLoc
 export const usd = (x) => (x == null || Number.isNaN(x) ? "—" : "US$" + Math.round(x).toLocaleString("es-CL"));
 export const bps = (x) => (x == null || Number.isNaN(x) ? "—" : `${Math.round(x)} pb`);
 
-export const VERSION_COLOR = { v21: "var(--gold)", v3: "var(--teal)", v20: "var(--violet)", hodl: "var(--steel)", cash: "var(--muted)" };
-export const VERSION_NAME = { v21: "v2.1", v3: "V3", v20: "v2.0", hodl: "HODL", cash: "Cash" };
+export const VERSION_COLOR = { v21: "var(--gold)", v3: "var(--teal)", v20: "var(--violet)", v21x: "var(--gold)", v3x: "var(--teal)", hodl: "var(--steel)", cash: "var(--muted)" };
+export const VERSION_NAME = { v21: "v2.1", v3: "V3", v20: "v2.0", v21x: "v2.1 · ejec. 05:00", v3x: "V3 · ejec. 05:00", hodl: "HODL", cash: "Cash" };
 
 export const actionColor = (a) => (a === "COMPRAR" ? "var(--buy)" : a === "VENDER" ? "var(--sell)" : "var(--hold)");
 export const actionLabel = (a) => (a === "COMPRAR" ? "COMPRAR" : a === "VENDER" ? "VENDER" : "MANTENER");
@@ -306,7 +306,7 @@ export function EquityChart({ data, cone, coneKey, hasCash, color, liveStart, al
 export function CompareChart({ cmp, liveStart }) {
   const [hidden, setHidden] = useState({});
   if (!cmp.rows.length || cmp.keys.length < 2) return null;
-  const last = cmp.rows.at(-1);
+  const lastOf = (k) => { const r = [...cmp.rows].reverse().find((x) => x[k] != null); return r ? r[k] : null; };
   const toggle = (k) => setHidden({ ...hidden, [k]: !hidden[k] });
   return (
     <div className="panel">
@@ -316,7 +316,7 @@ export function CompareChart({ cmp, liveStart }) {
           <button key={k} type="button" onClick={() => toggle(k)} aria-pressed={!hidden[k]} title="Mostrar u ocultar"
             style={{ background: "transparent", border: "1px solid var(--line)", borderRadius: 999, padding: "3px 10px", cursor: "pointer",
               font: "inherit", fontSize: 12, color: VERSION_COLOR[k], opacity: hidden[k] ? 0.4 : 1, textDecoration: hidden[k] ? "line-through" : "none" }}>
-            ● {VERSION_NAME[k]} {last[k] != null ? pct(last[k] - 1) : "—"}
+            ● {VERSION_NAME[k]} {lastOf(k) != null ? pct(lastOf(k) - 1) : "—"}
           </button>
         ))}
       </div>
@@ -329,16 +329,17 @@ export function CompareChart({ cmp, liveStart }) {
           <Tooltip contentStyle={tipBox} labelStyle={{ color: "var(--muted)" }} formatter={(v, k) => [`${num(v, 4)}×`, VERSION_NAME[k] || k]} />
           {liveStart && <ReferenceLine x={liveStart} stroke="var(--teal)" strokeDasharray="4 3" label={{ value: "V3 en vivo →", position: "insideTopLeft", fill: "var(--muted)", fontSize: 11 }} />}
           {!hidden.hodl && <Line dataKey="hodl" stroke="var(--steel)" strokeWidth={1.2} dot={false} isAnimationActive={false} connectNulls />}
-          {cmp.keys.filter((k) => !hidden[k]).map((k) => <Line key={k} dataKey={k} stroke={VERSION_COLOR[k]} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />)}
+          {cmp.keys.filter((k) => !hidden[k]).map((k) => <Line key={k} dataKey={k} stroke={VERSION_COLOR[k]} strokeWidth={k.endsWith("x") ? 1.5 : 2}
+            strokeDasharray={k.endsWith("x") ? "5 3" : undefined} dot={false} isAnimationActive={false} connectNulls />)}
         </LineChart>
       </ResponsiveContainer>
-      <div className="sub">Todas rebasadas a 1 en la fecha en que empezó la versión más reciente con datos. Mismos precios, distintas reglas. Toca una etiqueta para mostrarla u ocultarla.{liveStart ? ` V3 está reconstruida antes del ${liveStart}.` : ""}</div>
+      <div className="sub">Todas rebasadas a 1 en la fecha en que empezó la versión más reciente con datos. Mismos precios, distintas reglas. Las líneas punteadas son las mismas versiones ejecutando a las 05:00 UTC del día siguiente en vez de al cierre. Toca una etiqueta para mostrarla u ocultarla.{liveStart ? ` V3 está reconstruida antes del ${liveStart}.` : ""}</div>
     </div>
   );
 }
 
-export function DrawdownChart({ data, color }) {
-  const rows = useMemo(() => withDrawdowns(data), [data]);
+export function DrawdownChart({ data, color, rebase = "account" }) {
+  const rows = useMemo(() => withDrawdowns(data, rebase), [data, rebase]);
   return (
     <div className="panel">
       <div className="eyebrow">Caída desde el máximo — estrategia vs HODL</div>
@@ -375,18 +376,20 @@ export function ExposureChart({ data, color }) {
   );
 }
 
-export function ExecutionPanel({ sf }) {
-  if (!sf) return null;
+export function ExecutionPanel({ sf, version, gap }) {
+  if (!sf && !gap) return null;
+  if (!sf) sf = { pts: [], trades: [], n: 0, nTrades: 0, nTradeRows: 0, unmatched: 0, medAbs: NaN, p90Abs: NaN, medDelay: NaN, maxDelay: NaN, tradeMeanCost: NaN, tradeImpactBps: 0 };
   const all = sf.pts.filter((p) => p.trade == null).map((p) => ({ ...p, gapPct: p.gap * 100 }));
   const buys = sf.trades.filter((p) => p.side > 0).map((p) => ({ ...p, gapPct: p.gap * 100 }));
   const sells = sf.trades.filter((p) => p.side < 0).map((p) => ({ ...p, gapPct: p.gap * 100 }));
   return (
     <div className="panel">
-      <div className="eyebrow">Ejecución — precio al correr vs cierre de la señal · v2.1</div>
+      <div className="eyebrow">Ejecución — precio al correr vs cierre de la señal · {VERSION_NAME[version] || version}</div>
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", marginTop: 10, fontSize: 12 }}>
-        <div><div className="sub">Costo medio por operación</div><div className="metric-val" style={{ fontSize: 20, color: sf.tradeMeanCost > 0 ? "var(--sell)" : "var(--buy)" }}>{sf.nTrades ? pct(sf.tradeMeanCost, 2) : "—"}</div><div className="sub">{sf.nTrades} operaciones · + = pagó más / vendió más barato</div></div>
+        {gap && <div><div className="sub">Registro 05:00 vs teórico</div><div className="metric-val" style={{ fontSize: 20, color: gap.gap < 0 ? "var(--sell)" : "var(--buy)" }}>{pct(gap.gap, 2)}</div><div className="sub">capital al {gap.date}: {num(gap.late, 4)}× vs {num(gap.theo, 4)}×</div></div>}
+        <div><div className="sub">Costo medio por operación</div><div className="metric-val" style={{ fontSize: 20, color: sf.tradeMeanCost > 0 ? "var(--sell)" : "var(--buy)" }}>{sf.nTrades ? pct(sf.tradeMeanCost, 2) : "—"}</div><div className="sub">{sf.nTrades} de {sf.nTradeRows} operaciones con corrida propia{sf.unmatched ? ` · ${sf.unmatched} escritas después (gap-fill o reconstrucción) quedan fuera` : ""} · + = pagó más / vendió más barato</div></div>
         <div><div className="sub">Impacto acumulado</div><div className="metric-val" style={{ fontSize: 20 }}>{sf.nTrades ? `${num(sf.tradeImpactBps, 1)} pb` : "—"}</div><div className="sub">brecha × tamaño de cada operación</div></div>
-        <div><div className="sub">Movimiento típico del mercado</div><div className="metric-val" style={{ fontSize: 20 }}>{pct(sf.medAbs, 2)}</div><div className="sub">todas las corridas · p90 {pct(sf.p90Abs, 2)}</div></div>
+        <div><div className="sub">Movimiento típico del mercado</div><div className="metric-val" style={{ fontSize: 20 }}>{pct(sf.medAbs, 2)}</div><div className="sub">{sf.n} velas, primera corrida válida de cada día · p90 {pct(sf.p90Abs, 2)}</div></div>
         <div><div className="sub">Atraso del cron</div><div className="metric-val" style={{ fontSize: 20 }}>{num(sf.medDelay, 1)} h</div><div className="sub">mediana · máx {num(sf.maxDelay, 1)} h</div></div>
       </div>
       <ResponsiveContainer width="100%" height={210}>

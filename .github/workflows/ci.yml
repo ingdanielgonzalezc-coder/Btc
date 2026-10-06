@@ -1,0 +1,38 @@
+name: CI — tests en cada push
+
+# Corre todas las pruebas (Python + lógica del dashboard) en cada push y pull request,
+# para que cada commit tenga evidencia verificable de que la suite pasa.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Tests (motores, I/O, registro de ejecución, simulador de investigación)
+        run: pytest -q
+
+  dashboard:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: npm ci
+      - name: Tests de la lógica del dashboard
+        run: npm test
+      - name: Build
+        run: npm run build

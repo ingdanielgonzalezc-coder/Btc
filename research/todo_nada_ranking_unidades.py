@@ -7,7 +7,7 @@ src=open(__import__("os").path.join(__import__("os").path.dirname(__import__("os
 src=src.replace("def add(fam,name,w,params=None):\n    s=score(eq_from_w(w)); s.update(fam=fam,name=name); res.append(s)",
                 "W={}\ndef add(fam,name,w,params=None):\n    W[(fam,name)]=w.fillna(0).clip(0,1)")
 exec(src.split("R=pd.DataFrame(res)")[0])
-ex=pd.read_csv(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)),"data","exec_prices.csv"),index_col=0,parse_dates=True)["x0500"].reindex(px.index)
+ex=pd.read_csv(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)),"datos","exec_prices.csv"),index_col=0,parse_dates=True)["x0500"].reindex(px.index)
 END="2026-10-03"; H=px.loc[START:END]
 def start_ratios(e):
     out=[]

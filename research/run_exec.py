@@ -1,7 +1,7 @@
 import sys; sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import pandas as pd, numpy as np, lib
 from cands import px, tgt, VS, dc, t5
-ex=pd.read_csv("data/exec_prices.csv",index_col=0,parse_dates=True)
+ex=pd.read_csv(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)),"datos","exec_prices.csv"),index_col=0,parse_dates=True)
 held=lib.band_held(tgt); c4=(dc*VS).clip(0,1)
 for name in [None,"x0005","x0100","x0500","x1200"]:
     e=None if name is None else ex[name].reindex(px.index)

@@ -50,3 +50,18 @@ Advertencias sobre esta evidencia (revisión externa, oct-2026):
 Resultado: 20/60/120/250 ≥3 de 4 (plazos heredados de v2.0, no elegidos por la búsqueda)
 da 486× desde 2014 contra 114× HODL. Las reglas que la superan en el backtest no resisten
 la vecindad de parámetros ni el walk-forward (147× vs 224× desde 2017).
+
+
+## Reproducir sin descargar nada
+
+`datos/` contiene los precios diarios y de ejecución derivados de Bitstamp (CC BY-SA 4.0,
+ver `datos/LICENCIA-DATOS.md`, sumas en `datos/SHA256SUMS`). `lib.load_prices()` los usa
+si no existe `data/`. Las salidas que respaldan las cifras de la spec están en `resultados/`:
+
+| Archivo | Script | Cifras |
+|---|---|---|
+| `resultados/ejecucion.txt` | `todo_nada_ejecucion.py` | 483× teórico, 363× a las 05:00, v2.1 102× |
+| `resultados/ranking_aproximado.txt` | `todo_nada_maxcap.py` | 147 reglas, contabilidad aproximada |
+| `resultados/ranking_unidades_cash.txt` | `todo_nada_ranking_unidades.py` | puesto 12 (teórico) y 18 (05:00); walk-forward |
+
+Tests del simulador: `python -m pytest -q test_lib_simulate.py` (también corren en CI).

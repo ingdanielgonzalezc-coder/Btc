@@ -1,7 +1,7 @@
 import sys; sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import pandas as pd, numpy as np, lib
 from cands import px, tgt, trend
-ex=pd.read_csv(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)),"data","exec_prices.csv"),index_col=0,parse_dates=True)
+ex=pd.read_csv(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)),"datos","exec_prices.csv"),index_col=0,parse_dates=True)
 held=lib.band_held(tgt); v3=(trend>=0.75-1e-12).astype(float)
 END="2026-10-03"
 print("precios de ejecución faltantes 2014→:", {c:int(ex[c].reindex(px.loc['2014':END].index).isna().sum()) for c in ex.columns})

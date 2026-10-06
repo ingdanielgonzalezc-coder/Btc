@@ -12,6 +12,7 @@ export const SOURCE_DEFS = [
   { key: "meta", kind: "meta", label: "Corridas de v2.1", tab: "meta_runs", env: env.VITE_CSV_META || "" },
   { key: "meta_v3", kind: "meta", label: "Corridas de V3", tab: "meta_runs_v3", env: env.VITE_CSV_META_V3 || "" },
   { key: "levels", kind: "levels", label: "Precios de giro", tab: "next_levels", env: env.VITE_CSV_LEVELS || "" },
+  { key: "exec", kind: "exec", label: "Registro con ejecución 05:00 UTC", tab: "track_record_exec", env: env.VITE_CSV_EXEC || "" },
 ];
 
 const LS_KEY = "btc-dashboard-sources";

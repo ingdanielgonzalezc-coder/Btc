@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import cone from "./cone.json";
 import {
   parseTrack, parseMeta, parseLevels, assumptionsFrom, computeMetrics, compareSeries,
-  shortfall, health, scenariosV21, scenariosV3, firstLiveDate, liveSlice, daysStale, STALE_AFTER_DAYS, MIN_DAYS_ANNUALIZED, RETAIL_BPS,
+  shortfall, health, scenariosV21, scenariosV3, firstLiveDate, liveSlice, parseExec, execGap, daysStale, STALE_AFTER_DAYS, MIN_DAYS_ANNUALIZED, RETAIL_BPS,
 } from "./lib.js";
 import { SOURCE_DEFS, loadUrls, saveUrls, clearSavedUrls, loadAll } from "./sources.js";
 import {
@@ -45,6 +45,7 @@ export default function App() {
     v20: raw.v20 ? parseTrack(raw.v20, A.costBps) : null,
   }), [raw.v21, raw.v3, raw.v20, A.costBps]);
   const meta = useMemo(() => (raw.meta ? parseMeta(raw.meta) : null), [raw.meta]);
+  const execTracks = useMemo(() => (raw.exec ? parseExec(raw.exec) : {}), [raw.exec]);
   const metaV3 = useMemo(() => (raw.meta_v3 ? parseMeta(raw.meta_v3) : null), [raw.meta_v3]);
 
   // si la versión elegida no tiene datos, cae a la primera que sí
@@ -55,18 +56,16 @@ export default function App() {
   const hasLiveSplit = !!liveData && fullData.some((d) => d.live === false);
   const useLive = hasLiveSplit && span === "live";
   const data = useLive ? liveData : fullData;
+  const cmp = useMemo(() => compareSeries(Object.fromEntries(Object.entries({ ...tracks, ...execTracks }).filter(([, v]) => v?.length)),
+    useLive && liveData?.length ? liveData[0].date : null), [tracks, execTracks, useLive, liveData]);
+  const xGap = useMemo(() => (active === "v21" || active === "v3" ? execGap(tracks[active], execTracks[`${active}x`]) : null), [active, tracks, execTracks]);
   const last = fullData.at(-1);   // estado de hoy: siempre del registro completo
   const color = VERSION_COLOR[active];
   const metrics = useMemo(() => computeMetrics(data, A.stableApy, A.costBps, useLive ? "first" : "account"), [data, A.stableApy, A.costBps, useLive]);
-  const cmp = useMemo(() => compareSeries(Object.fromEntries(Object.entries(tracks).filter(([, v]) => v?.length))), [tracks]);
 
-  const closes = useMemo(() => {
-    const m = new Map();
-    for (const k of ["v20", "v21", "v3"]) for (const d of tracks[k] || []) if (!m.has(d.date)) m.set(d.date, d.btc);
-    return m;
-  }, [tracks]);
-  const trades21 = useMemo(() => new Map((tracks.v21 || []).map((d) => [d.date, d.tradePct])), [tracks.v21]);
-  const sf = useMemo(() => (meta ? shortfall(meta, closes, trades21) : null), [meta, closes, trades21]);
+  // ejecución de la versión activa, con SUS corridas y SUS cierres
+  const sf = useMemo(() => (active === "v3" ? shortfall(metaV3, tracks.v3) : active === "v21" ? shortfall(meta, tracks.v21) : null),
+    [active, meta, metaV3, tracks.v21, tracks.v3]);
   const h21 = useMemo(() => health(meta, tracks.v21), [meta, tracks.v21]);
   const h3 = useMemo(() => health(metaV3, tracks.v3), [metaV3, tracks.v3]);
   const hActive = active === "v3" ? h3 : h21;
@@ -219,7 +218,7 @@ export default function App() {
             liveStart={active === "v3" ? v3Live : null} allReconstructed={active === "v3" && v3AllRec} />
           <CompareChart cmp={cmp} liveStart={v3Live} />
           <div className="two">
-            <DrawdownChart data={data} color={color} />
+            <DrawdownChart data={data} color={color} rebase={useLive ? "first" : "account"} />
             <ExposureChart data={data} color={color} />
           </div>
 
@@ -245,7 +244,7 @@ export default function App() {
           )}
           </>}
 
-          <ExecutionPanel sf={sf} />
+          <ExecutionPanel sf={sf} version={active} gap={xGap} />
 
           {/* ------------------------------------------------ decisiones */}
           <div className="panel">

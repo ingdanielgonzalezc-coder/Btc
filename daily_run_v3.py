@@ -43,8 +43,8 @@ def fetch_prices():
         cursor = c_end
     if not rows:
         raise RuntimeError("Coinbase no devolvió velas")
-    close = io21._clean_close_series(pd.Series(rows).sort_index())
-    io21.validate_daily_series(close, start=_download_start())
+    close = io21._clean_close_series(pd.Series(rows, dtype="float64").sort_index(), drop_nan=False)
+    io21.validate_daily_series(close, start=_download_start(), end=io21.expected_last_candle())
     if len(close) < max(e3.LOOKBACKS) + 5:
         raise RuntimeError(f"Coinbase devolvió {len(close)} velas; insuficiente")
     return close, "coinbase"

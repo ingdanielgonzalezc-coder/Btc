@@ -27,12 +27,19 @@ y define estas variables en Vercel (**Settings → Environment Variables**), lue
 | `VITE_CSV_META` | `meta_runs` |
 | `VITE_CSV_META_V3` | `meta_runs_v3` |
 | `VITE_CSV_LEVELS` | `next_levels` |
+| `VITE_CSV_EXEC` | `track_record_exec` |
 
 También puedes pegarlas en la app con **Fuentes de datos**; quedan guardadas solo en ese
 navegador. La app reconoce cada pestaña por sus columnas: si un link apunta a otra pestaña
 de registro, la reasigna y lo avisa.
 
 > Las variables `VITE_*` quedan dentro del bundle. Los links CSV publicados ya son públicos.
+
+## Tests
+
+```bash
+npm test        # lógica de métricas, escenarios, ejecución y comparación (node --test)
+```
 
 ## Local
 

@@ -60,6 +60,7 @@ export function normalizeDates(raw) {
 /* ------------------------------------------------------------------ pestañas */
 export function detectKind(fields) {
   const f = new Set(fields || []);
+  if (f.has("exec_price") && f.has("version")) return "exec";
   if (f.has("votes_up") || f.has("donchian_score")) return "v3";
   if (f.has("signal_weight")) return "v21";
   if (f.has("strat_equity")) return "v20";
@@ -111,6 +112,36 @@ export function parseTrack(rows, costBps = DEFAULTS.costBps) {
   return [...byDate.values()]
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
     .map((r) => ({ ...r, inMarket: r.weightReal > 1e-9 }));
+}
+
+/* Registro de ejecución atrasada: una pestaña con v2.1 y V3 (columna version).
+   Se normaliza al mismo formato de registro: capital marcado al cierre, antes de operar. */
+export function parseExec(rows) {
+  const out = {};
+  for (const v of ["v21", "v3"]) {
+    const rs = rows.filter((r) => String(r.version).trim() === v);
+    if (!rs.length) continue;
+    const dates = normalizeDates(rs.map((r) => r.date));
+    out[`${v}x`] = rs.map((r, i) => ({
+      date: dates[i], btc: toNum(r.btc_close), strat: toNum(r.equity_close), hodl: toNum(r.hodl_close), cash: NaN,
+      tradePct: toNum(r.trade_pct), tradeCost: toNum(r.trade_cost) || 0, weightReal: toNum(r.weight_close),
+      signal: toNum(r.target_weight), target: toNum(r.target_weight), execPrice: toNum(r.exec_price),
+      live: r.live == null || r.live === "" ? null : toNum(r.live) === 1, action: "", trend: NaN, volScalar: NaN,
+    })).filter((d) => d.date && Number.isFinite(d.strat)).sort((a, b) => (a.date < b.date ? -1 : 1))
+      .map((d) => ({ ...d, inMarket: d.weightReal > 1e-9 }));
+  }
+  return out;
+}
+
+/* Brecha entre el registro teórico (opera al cierre) y el de ejecución atrasada,
+   en la última fecha común. Negativo = ejecutar tarde costó capital. */
+export function execGap(theo, late) {
+  if (!theo?.length || !late?.length) return null;
+  const m = new Map(theo.map((d) => [d.date, d]));
+  const last = [...late].reverse().find((d) => m.has(d.date));
+  if (!last) return null;
+  const t = m.get(last.date);
+  return { date: last.date, theo: t.strat, late: last.strat, gap: last.strat / t.strat - 1 };
 }
 
 export function parseMeta(rows) {
@@ -208,8 +239,9 @@ export function liveSlice(data) {
   return data.slice(Math.max(0, i - 1));
 }
 
-export function withDrawdowns(data) {
-  let ps = -Infinity, ph = -Infinity;
+/* base "account": la cuenta nace en 1,0 (el costo de entrada es caída); "first": tramo. */
+export function withDrawdowns(data, base = "account") {
+  let ps = base === "account" ? 1 : -Infinity, ph = base === "account" ? 1 : -Infinity;
   return data.map((d) => {
     ps = Math.max(ps, d.strat); ph = Math.max(ph, d.hodl);
     return { ...d, ddStrat: d.strat / ps - 1, ddHodl: d.hodl / ph - 1 };
@@ -243,8 +275,10 @@ export function coneAt(cone, key, day) {
 }
 
 /* ------------------------------------------------------------------ comparación */
-export function compareSeries(tracks) {
-  // tracks: {v21: data, v3: data, v20: data}; rebasa todo al inicio común (el más tardío)
+export function compareSeries(tracksIn, fromDate = null) {
+  // tracks: {v21: data, v3: data, v20: data}; rebasa todo al inicio común (el más tardío).
+  // fromDate: recorta todas las series desde esa fecha (p. ej. la base del tramo en vivo).
+  const tracks = Object.fromEntries(Object.entries(tracksIn).map(([k, v]) => [k, fromDate && v ? v.filter((d) => d.date >= fromDate) : v]));
   const keys = Object.keys(tracks).filter((k) => tracks[k] && tracks[k].length >= 2);
   if (!keys.length) return { rows: [], start: null, keys: [] };
   const start = keys.map((k) => tracks[k][0].date).sort().at(-1);
@@ -270,29 +304,45 @@ export function compareSeries(tracks) {
 }
 
 /* ------------------------------------------------------------------ ejecución */
-export function shortfall(meta, closeByDate, tradeByDate = new Map()) {
-  const pts = meta
-    .map((m) => {
-      const close = closeByDate.get(m.lastCandle);
-      if (!Number.isFinite(m.spot) || !Number.isFinite(close)) return null;
-      const tp = tradeByDate.get(m.lastCandle);
-      return { run: m.run, date: m.lastCandle, gap: m.spot / close - 1, delayH: m.delayH,
-        trade: Number.isFinite(tp) && Math.abs(tp) > 1e-9 ? tp : null };
-    })
-    .filter(Boolean);
-  if (!pts.length) return null;
-  const med = (a) => { const s = [...a].sort((x, y) => x - y); const n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; };
-  const q = (a, p) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
+/* Brecha de ejecución de UNA versión: su registro (cierres y operaciones) y sus corridas.
+   - Mercado: una observación por vela, la primera corrida válida (OK) de ese día.
+   - Operaciones: cada operación del registro se vincula con la corrida que la ESCRIBIÓ
+     (OK, rows_added ≥ 1, last_candle = fecha). Las filas escritas después por gap-fill o
+     reconstrucción no tienen corrida propia y quedan fuera (se informan aparte). */
+export function shortfall(meta, track) {
+  if (!meta?.length || !track?.length) return null;
+  const byDate = new Map(track.map((d) => [d.date, d]));
+  const firstOk = new Map(), writer = new Map();
+  for (const m of meta) {                                   // meta viene ordenado por runMs
+    if (!m.ok || !Number.isFinite(m.spot) || !m.lastCandle) continue;
+    if (!firstOk.has(m.lastCandle)) firstOk.set(m.lastCandle, m);
+    if (m.rowsAdded >= 1 && !writer.has(m.lastCandle)) writer.set(m.lastCandle, m);
+  }
+  const pts = [...firstOk.values()].map((m) => {
+    const d = byDate.get(m.lastCandle);
+    return d && Number.isFinite(d.btc) ? { run: m.run, date: m.lastCandle, gap: m.spot / d.btc - 1, delayH: m.delayH, trade: null } : null;
+  }).filter(Boolean);
+  const tradeRows = track.filter((d) => Number.isFinite(d.tradePct) && Math.abs(d.tradePct) > 1e-9);
+  const tr = [];
+  let unmatched = 0;
+  for (const d of tradeRows) {
+    const m = writer.get(d.date);
+    if (!m) { unmatched++; continue; }
+    const gap = m.spot / d.btc - 1, side = Math.sign(d.tradePct);
+    tr.push({ run: m.run, date: d.date, gap, delayH: m.delayH, trade: d.tradePct, side, costPct: side * gap, impact: side * gap * Math.abs(d.tradePct) });
+  }
+  const tradeDates = new Set(tr.map((t) => t.date));
+  for (const p of pts) if (tradeDates.has(p.date)) p.trade = true;   // el punto de mercado ya está como operación
+  if (!pts.length && !tr.length) return null;
+  const med = (a) => { const x = [...a].sort((u, v) => u - v); const n = x.length; return !n ? NaN : n % 2 ? x[(n - 1) / 2] : (x[n / 2 - 1] + x[n / 2]) / 2; };
+  const q = (a, p) => { const x = [...a].sort((u, v) => u - v); return x.length ? x[Math.min(x.length - 1, Math.floor(p * x.length))] : NaN; };
   const abs = pts.map((p) => Math.abs(p.gap)), dl = pts.map((p) => p.delayH).filter(Number.isFinite);
-  // Solo días con operación: costo = sentido × brecha (compra a precio más alto o venta a
-  // más bajo = costo positivo); impacto = costo × tamaño de la operación (fracción del capital).
-  const tr = pts.filter((p) => p.trade != null).map((p) => ({ ...p, side: Math.sign(p.trade), costPct: Math.sign(p.trade) * p.gap, impact: Math.sign(p.trade) * p.gap * Math.abs(p.trade) }));
   return {
-    pts, n: pts.length,
+    pts: pts.filter((p) => !p.trade), n: pts.length,
     medAbs: med(abs), p90Abs: q(abs, 0.9),
-    mean: pts.reduce((a, p) => a + p.gap, 0) / pts.length,
-    medDelay: dl.length ? med(dl) : NaN, maxDelay: dl.length ? Math.max(...dl) : NaN,
-    trades: tr, nTrades: tr.length,
+    mean: pts.length ? pts.reduce((a, p) => a + p.gap, 0) / pts.length : NaN,
+    medDelay: med(dl), maxDelay: dl.length ? Math.max(...dl) : NaN,
+    trades: tr, nTrades: tr.length, nTradeRows: tradeRows.length, unmatched,
     tradeMeanCost: tr.length ? tr.reduce((a, p) => a + p.costPct, 0) / tr.length : NaN,
     tradeImpactBps: tr.reduce((a, p) => a + p.impact, 0) * 1e4,
   };

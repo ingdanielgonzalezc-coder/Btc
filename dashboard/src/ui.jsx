@@ -215,23 +215,30 @@ export function HealthPanel({ title, h }) {
 }
 
 /* ------------------------------------------------------------------ gráficos */
-export function EquityChart({ data, cone, coneKey, hasCash, color, liveStart, allReconstructed }) {
+export function EquityChart({ data, cone, coneKey, hasCash, color, liveStart, allReconstructed, rebase = "account" }) {
   const [logScale, setLogScale] = useState(true);
   const [showCone, setShowCone] = useState(true);
   const rows = useMemo(() => {
     if (!data.length) return [];
-    const d0 = data[0].date, base = data[0].strat;
+    // "account": la cuenta nace en 1,0 (el costo de la primera compra se ve);
+    // "first": tramo rebasado en su primera fila (p. ej. solo en vivo)
+    const d0 = data[0].date;
+    const base = rebase === "first" ? data[0].strat : 1;
+    const hb = rebase === "first" ? data[0].hodl : 1;
+    const cb = rebase === "first" ? data[0].cash : 1;
     return data.map((d) => {
       const c = cone ? coneAt(cone, coneKey, daysBetween(d0, d.date)) : null;
       return {
         ...d,
         stratN: d.strat / base,
+        hodlN: d.hodl / hb,
+        cashN: d.cash / cb,
         cone90: c ? [c[5], c[95]] : null,
         cone50: c ? [c[25], c[75]] : null,
         coneMed: c ? c[50] : null,
       };
     });
-  }, [data, cone, coneKey]);
+  }, [data, cone, coneKey, rebase]);
   const spans = useMemo(() => {
     const out = []; let st = null;
     rows.forEach((d, i) => {
@@ -249,7 +256,7 @@ export function EquityChart({ data, cone, coneKey, hasCash, color, liveStart, al
           <div className="eyebrow">Capital — estrategia vs comprar y mantener</div>
           <div style={{ fontSize: 12, marginTop: 4 }} className="row">
             <span style={{ color }}>● estrategia {last ? pct(last.stratN - 1) : ""}</span>
-            <span style={{ color: "var(--steel)" }}>● HODL {last ? pct(last.hodl / rows[0].hodl - 1) : ""}</span>
+            <span style={{ color: "var(--steel)" }}>● HODL {last ? pct(last.hodlN - 1) : ""}</span>
             {hasCash && <span style={{ color: "var(--muted)" }}>● cash</span>}
             {cone && <span style={{ color: "var(--muted)" }}>▒ rango esperado</span>}
           </div>
@@ -275,7 +282,7 @@ export function EquityChart({ data, cone, coneKey, hasCash, color, liveStart, al
               <div style={tipBox}>
                 <div style={{ color: "var(--muted)" }}>{label}</div>
                 <div style={{ color }}>Estrategia {num(p.stratN, 4)}×</div>
-                <div style={{ color: "var(--steel)" }}>HODL {num(p.hodl / rows[0].hodl, 4)}×</div>
+                <div style={{ color: "var(--steel)" }}>HODL {num(p.hodlN, 4)}×</div>
                 {p.cone90 && <div style={{ color: "var(--muted)" }}>Rango 90%: {num(p.cone90[0], 3)}–{num(p.cone90[1], 3)}×</div>}
                 <div style={{ color: "var(--muted)" }}>{p.inMarket ? `en mercado · ${pct(p.weightReal, 0)}` : "en cash"} · {usd(p.btc)}</div>
               </div>
@@ -284,13 +291,13 @@ export function EquityChart({ data, cone, coneKey, hasCash, color, liveStart, al
           {cone && showCone && <Area dataKey="cone90" stroke="none" fill="var(--muted)" fillOpacity={0.12} isAnimationActive={false} />}
           {cone && showCone && <Area dataKey="cone50" stroke="none" fill="var(--muted)" fillOpacity={0.18} isAnimationActive={false} />}
           {cone && showCone && <Line dataKey="coneMed" stroke="var(--muted)" strokeDasharray="2 3" strokeWidth={1} dot={false} isAnimationActive={false} />}
-          <Line dataKey={(d) => d.hodl / rows[0].hodl} name="hodl" stroke="var(--steel)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-          {hasCash && <Line dataKey={(d) => d.cash / rows[0].cash} name="cash" stroke="var(--muted)" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />}
+          <Line dataKey="hodlN" name="hodl" stroke="var(--steel)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+          {hasCash && <Line dataKey="cashN" name="cash" stroke="var(--muted)" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />}
           <Line dataKey="stratN" stroke={color} strokeWidth={2} dot={false} isAnimationActive={false} />
         </ComposedChart>
       </ResponsiveContainer>
       <div className="sub" style={{ marginTop: 6 }}>
-        Bandas doradas = en mercado. {liveStart ? `Antes del ${liveStart} el registro es reconstruido (calculado después, con las mismas reglas); la evidencia en vivo empieza en la línea punteada. ` : allReconstructed ? "Todo el registro mostrado es reconstruido: aún no hay días en vivo. " : ""}{cone ? `El rango gris es el 50% y 90% central de 4.000 trayectorias simuladas con los retornos diarios 2022–2026 del backtest${outside ? "; hoy la estrategia está FUERA de ese rango" : "; hoy la estrategia está dentro"}.` : ""}
+        Bandas doradas = en mercado. {liveStart ? `Antes del ${liveStart} el registro es reconstruido (calculado después, con las mismas reglas); la evidencia en vivo empieza en la línea punteada. ` : allReconstructed ? "Todo el registro mostrado es reconstruido: aún no hay días en vivo. " : ""}{cone ? `El rango gris es una distribución histórica simulada (50% y 90% central de 4.000 trayectorias armadas con los retornos diarios 2022–2026 del backtest), no una predicción${outside ? "; hoy la estrategia está FUERA de ese rango" : "; hoy la estrategia está dentro"}.` : ""}
       </div>
     </div>
   );
@@ -370,17 +377,19 @@ export function ExposureChart({ data, color }) {
 
 export function ExecutionPanel({ sf }) {
   if (!sf) return null;
-  const pts = sf.pts.map((p) => ({ ...p, gapPct: p.gap * 100 }));
+  const all = sf.pts.filter((p) => p.trade == null).map((p) => ({ ...p, gapPct: p.gap * 100 }));
+  const buys = sf.trades.filter((p) => p.side > 0).map((p) => ({ ...p, gapPct: p.gap * 100 }));
+  const sells = sf.trades.filter((p) => p.side < 0).map((p) => ({ ...p, gapPct: p.gap * 100 }));
   return (
     <div className="panel">
-      <div className="eyebrow">Ejecución — precio al correr vs cierre de la señal</div>
-      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", marginTop: 10, fontSize: 12 }}>
-        <div><div className="sub">Brecha típica</div><div className="metric-val" style={{ fontSize: 20 }}>{pct(sf.medAbs, 2)}</div><div className="sub">mediana |spot/cierre − 1|</div></div>
-        <div><div className="sub">Brecha p90</div><div className="metric-val" style={{ fontSize: 20 }}>{pct(sf.p90Abs, 2)}</div><div className="sub">1 de cada 10 corridas</div></div>
-        <div><div className="sub">Sesgo medio</div><div className="metric-val" style={{ fontSize: 20 }}>{pct(sf.mean, 2)}</div><div className="sub">≈0 = ruido, no costo sistemático</div></div>
+      <div className="eyebrow">Ejecución — precio al correr vs cierre de la señal · v2.1</div>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", marginTop: 10, fontSize: 12 }}>
+        <div><div className="sub">Costo medio por operación</div><div className="metric-val" style={{ fontSize: 20, color: sf.tradeMeanCost > 0 ? "var(--sell)" : "var(--buy)" }}>{sf.nTrades ? pct(sf.tradeMeanCost, 2) : "—"}</div><div className="sub">{sf.nTrades} operaciones · + = pagó más / vendió más barato</div></div>
+        <div><div className="sub">Impacto acumulado</div><div className="metric-val" style={{ fontSize: 20 }}>{sf.nTrades ? `${num(sf.tradeImpactBps, 1)} pb` : "—"}</div><div className="sub">brecha × tamaño de cada operación</div></div>
+        <div><div className="sub">Movimiento típico del mercado</div><div className="metric-val" style={{ fontSize: 20 }}>{pct(sf.medAbs, 2)}</div><div className="sub">todas las corridas · p90 {pct(sf.p90Abs, 2)}</div></div>
         <div><div className="sub">Atraso del cron</div><div className="metric-val" style={{ fontSize: 20 }}>{num(sf.medDelay, 1)} h</div><div className="sub">mediana · máx {num(sf.maxDelay, 1)} h</div></div>
       </div>
-      <ResponsiveContainer width="100%" height={200}>
+      <ResponsiveContainer width="100%" height={210}>
         <ScatterChart margin={{ top: 12, right: 8, left: 4, bottom: 4 }}>
           <CartesianGrid stroke="var(--line)" strokeDasharray="2 4" />
           <XAxis type="number" dataKey="delayH" name="atraso" unit=" h" {...axisProps} />
@@ -388,10 +397,13 @@ export function ExecutionPanel({ sf }) {
           <ZAxis range={[28, 28]} />
           <ReferenceLine y={0} stroke="var(--line)" />
           <Tooltip contentStyle={tipBox} formatter={(v, k) => [k === "atraso" ? `${num(v, 1)} h` : `${num(v, 2)}%`, k]} />
-          <Scatter data={pts} fill="var(--gold)" fillOpacity={0.7} isAnimationActive={false} />
+          <Scatter name="sin operación" data={all} fill="var(--muted)" fillOpacity={0.45} isAnimationActive={false} />
+          <Scatter name="compra" data={buys} fill="var(--buy)" isAnimationActive={false} />
+          <Scatter name="venta" data={sells} fill="var(--sell)" isAnimationActive={false} />
         </ScatterChart>
       </ResponsiveContainer>
-      <div className="sub">{sf.n} corridas. El motor supone 3 pb de slippage; la brecha real entre el cierre de las 00:00 UTC y la hora en que corre el cron es mucho mayor. No entra al registro (debe ser recomputable), pero importa antes de usar dinero real.</div>
+      <div className="row sub"><span style={{ color: "var(--buy)" }}>● compra</span><span style={{ color: "var(--sell)" }}>● venta</span><span>● corrida sin operación</span></div>
+      <div className="sub">El registro opera al cierre (teórico y recomputable). Aquí se mide cuánto habría cambiado el precio al ejecutar cuando corre el cron: en una compra, un spot sobre el cierre es costo; en una venta, uno bajo el cierre. Solo cuentan los días con operación. En el backtest 2014–2026, ejecutar 5 h después reduce el capital final de V3 de 483× a 363× y deja a v2.1 bajo HODL.</div>
     </div>
   );
 }

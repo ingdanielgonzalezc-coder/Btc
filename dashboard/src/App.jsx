@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import cone from "./cone.json";
 import {
   parseTrack, parseMeta, parseLevels, assumptionsFrom, computeMetrics, compareSeries,
-  shortfall, health, scenariosV21, scenariosV3, firstLiveDate, daysStale, STALE_AFTER_DAYS, MIN_DAYS_ANNUALIZED, RETAIL_BPS,
+  shortfall, health, scenariosV21, scenariosV3, firstLiveDate, liveSlice, daysStale, STALE_AFTER_DAYS, MIN_DAYS_ANNUALIZED, RETAIL_BPS,
 } from "./lib.js";
 import { SOURCE_DEFS, loadUrls, saveUrls, clearSavedUrls, loadAll } from "./sources.js";
 import {
@@ -26,6 +26,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [version, setVersion] = useState("v21");
   const [showSources, setShowSources] = useState(false);
+  const [span, setSpan] = useState("all");   // "all" | "live"
 
   async function reload(u = urls) {
     setLoading(true);
@@ -49,10 +50,14 @@ export default function App() {
   // si la versión elegida no tiene datos, cae a la primera que sí
   const available = VERSIONS.filter((v) => tracks[v.key]?.length);
   const active = tracks[version]?.length ? version : (available[0]?.key || version);
-  const data = tracks[active] || [];
-  const last = data.at(-1);
+  const fullData = tracks[active] || [];
+  const liveData = useMemo(() => liveSlice(fullData), [fullData]);
+  const hasLiveSplit = !!liveData && fullData.some((d) => d.live === false);
+  const useLive = hasLiveSplit && span === "live";
+  const data = useLive ? liveData : fullData;
+  const last = fullData.at(-1);   // estado de hoy: siempre del registro completo
   const color = VERSION_COLOR[active];
-  const metrics = useMemo(() => computeMetrics(data, A.stableApy), [data, A.stableApy]);
+  const metrics = useMemo(() => computeMetrics(data, A.stableApy, A.costBps, useLive ? "first" : "account"), [data, A.stableApy, A.costBps, useLive]);
   const cmp = useMemo(() => compareSeries(Object.fromEntries(Object.entries(tracks).filter(([, v]) => v?.length))), [tracks]);
 
   const closes = useMemo(() => {
@@ -60,14 +65,15 @@ export default function App() {
     for (const k of ["v20", "v21", "v3"]) for (const d of tracks[k] || []) if (!m.has(d.date)) m.set(d.date, d.btc);
     return m;
   }, [tracks]);
-  const sf = useMemo(() => (meta ? shortfall(meta, closes) : null), [meta, closes]);
+  const trades21 = useMemo(() => new Map((tracks.v21 || []).map((d) => [d.date, d.tradePct])), [tracks.v21]);
+  const sf = useMemo(() => (meta ? shortfall(meta, closes, trades21) : null), [meta, closes, trades21]);
   const h21 = useMemo(() => health(meta, tracks.v21), [meta, tracks.v21]);
   const h3 = useMemo(() => health(metaV3, tracks.v3), [metaV3, tracks.v3]);
   const hActive = active === "v3" ? h3 : h21;
 
   const sc = useMemo(() => {
     if (active === "v3") return scenariosV3(levels);
-    return scenariosV21(levels, A.band);
+    return scenariosV21(levels, last?.weightReal, A.band);
   }, [active, levels, last, A.band]);
   const levelsStale = levels && last && levels.meta.date !== last.date;
 
@@ -197,7 +203,19 @@ export default function App() {
             <HealthPanel title="Salud de las corridas · V3" h={h3} />
           </div>
 
-          <EquityChart data={data} cone={active === "v20" ? null : cone} coneKey={coneKey} hasCash={hasCash} color={color}
+          {hasLiveSplit && (
+            <div className="row">
+              <div className="seg" role="group" aria-label="Tramo del registro">
+                <button id="span-all" aria-pressed={!useLive} onClick={() => setSpan("all")}>Todo el registro</button>
+                <button id="span-live" aria-pressed={useLive} onClick={() => setSpan("live")}>Solo en vivo</button>
+              </div>
+              <span className="sub">{useLive ? (liveData.length > 1 ? `Desde ${liveData[1].date}: métricas y gráficos rebasados al cierre anterior.` : "Aún no hay días en vivo.") : "Incluye filas reconstruidas (antes de que la versión existiera)."}</span>
+            </div>
+          )}
+          {useLive && liveData.length < 2 ? (
+            <div className="panel sub">Todavía no cierra la primera vela en vivo de esta versión. Mientras tanto, mira «Todo el registro».</div>
+          ) : <>
+          <EquityChart data={data} rebase={useLive ? "first" : "account"} cone={active === "v20" ? null : cone} coneKey={coneKey} hasCash={hasCash} color={color}
             liveStart={active === "v3" ? v3Live : null} allReconstructed={active === "v3" && v3AllRec} />
           <CompareChart cmp={cmp} liveStart={v3Live} />
           <div className="two">
@@ -209,12 +227,13 @@ export default function App() {
           {metrics && (
             <div>
               <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))" }}>
-                <Metric label="Retorno total" value={pct(metrics.totalStrat, 2)} sub={`HODL ${pct(metrics.totalHodl, 2)}`} accent={color} />
+                <Metric label="Ventaja vs HODL" value={pct(metrics.vsHodl, 2)} sub={`capital relativo: ${num(1 + metrics.totalStrat, 3)}× vs ${num(1 + metrics.totalHodl, 3)}×`} accent={metrics.vsHodl >= 0 ? "var(--buy)" : "var(--sell)"} />
+                <Metric label="Retorno total" value={pct(metrics.totalStrat, 2)} sub={`HODL ${pct(metrics.totalHodl, 2)} · incluye el costo de entrada`} accent={color} />
                 <Metric label="Contra cash" value={pct(metrics.excessOverCash, 2)} sub={`cash ${pct(metrics.cashTotal, 2)} · ${num(A.stableApy * 100, 1)}% anual supuesto`} accent={metrics.excessOverCash >= 0 ? "var(--buy)" : "var(--sell)"} />
                 <Metric label="Máxima caída" value={pct(metrics.maxDD, 2)} sub={`HODL ${pct(metrics.hodlMaxDD, 2)}`} accent="var(--sell)" />
-                <Metric label="Tiempo en mercado" value={pct(metrics.inMarketShare, 0)} sub={`${metrics.n} días`} />
+                <Metric label="Exposición media" value={pct(metrics.avgExposure, 0)} sub={`en BTC · con algo de BTC el ${pct(metrics.inMarketShare, 0)} de ${metrics.days} días`} />
                 <Metric label="Operaciones" value={metrics.trades} sub={`${num(metrics.trades / metrics.days * 365, 0)} al año · turnover ${num(metrics.turnover, 2)}×`} />
-                <Metric label="Costo acumulado" value={bps(metrics.costBps)} sub={`a ${RETAIL_BPS} pb (retail) serían ${bps(metrics.retailCostBps)}`} />
+                <Metric label="Costo acumulado" value={bps(metrics.costBps)} sub={`del capital inicial · a ${RETAIL_BPS} pb (retail) serían ${bps(metrics.retailCostBps)}`} />
                 <Metric label="Sharpe" value={metrics.sharpe == null ? "—" : num(metrics.sharpe, 2)} sub={metrics.enough ? "exceso sobre cash, anualizado" : `requiere ${MIN_DAYS_ANNUALIZED} d · hay ${metrics.days}`} />
                 <Metric label="Calmar" value={metrics.calmar == null ? "—" : num(metrics.calmar, 2)} sub={metrics.enough ? "CAGR / máxima caída" : `requiere ${MIN_DAYS_ANNUALIZED} d · hay ${metrics.days}`} />
               </div>
@@ -224,6 +243,7 @@ export default function App() {
               </div>
             </div>
           )}
+          </>}
 
           <ExecutionPanel sf={sf} />
 

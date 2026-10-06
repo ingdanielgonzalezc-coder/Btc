@@ -32,7 +32,20 @@ python todo_nada_maxcap.py        # 147 reglas en 9 familias (capital final, añ
 python todo_nada_maxcap_wf.py     # walk-forward: elegir la mejor cada año vs regla fija
 python todo_nada_hyst_check.py    # ventanas móviles 1–4 años, vecindad de la histéresis
 python todo_nada_verify_binary.py # cálculo independiente, atraso de 1 día, costos, tramos
+python todo_nada_ranking_unidades.py  # el mismo ranking con el motor units/cash, teórico y a las 05:00
+python todo_nada_ejecucion.py     # V3 y v2.1 ejecutando a 00:05, 01:00, 05:00 y 12:00 UTC del día siguiente
 ```
+
+Advertencias sobre esta evidencia (revisión externa, oct-2026):
+
+- `PREREG_v3_candidatos.md`, `run_is.py` y `run_oos.py` validan a la **V3 Donchian descartada**.
+  La V3 todo/nada se eligió después, con otra métrica (capital final). No hereda ese
+  pre-registro: su único control contra la selección es que los plazos vienen de v2.0.
+- `todo_nada_maxcap.py` usa contabilidad aproximada (peso × retorno). Rehecho con units/cash,
+  la mediana de diferencia es 0,8% (máx 1,2% en reglas binarias) y el top-10 no cambia.
+- "97% de ventanas de 4 años" usa ventanas mensuales superpuestas: no es una probabilidad.
+- `lib.simulate` con `exec_px`: desde esta versión marca el capital al cierre con las tenencias
+  previas y opera después; si falta un precio de ejecución, lanza error en vez de rellenar.
 
 Resultado: 20/60/120/250 ≥3 de 4 (plazos heredados de v2.0, no elegidos por la búsqueda)
 da 486× desde 2014 contra 114× HODL. Las reglas que la superan en el backtest no resisten

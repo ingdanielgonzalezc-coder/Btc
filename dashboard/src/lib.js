@@ -92,7 +92,10 @@ export function parseTrack(rows, costBps = DEFAULTS.costBps) {
         action: String(r.action || "").trim().toUpperCase(),
         tradePct,
         // v2.0 no tiene trade_cost: se estima con el mismo costo del motor
-        tradeCost: Number.isFinite(cost) ? cost : (Number.isFinite(tradePct) ? Math.abs(tradePct) * costBps / 1e4 : 0),
+        // v2.0 no tiene trade_cost: se estima con el costo del motor, en unidades de
+        // capital inicial (= |Δpeso| × capital × costo), igual que trade_cost de v2.1/V3
+        tradeCost: Number.isFinite(cost) ? cost
+          : (Number.isFinite(tradePct) ? Math.abs(tradePct) * toNum(pick(r, "equity", "strat_equity")) * costBps / 1e4 : 0),
         dailyRet: toNum(r.daily_return),
         strat: toNum(pick(r, "equity", "strat_equity")),
         hodl: toNum(r.hodl_equity),
@@ -154,37 +157,55 @@ export function assumptionsFrom(levels) {
 }
 
 /* ------------------------------------------------------------------ métricas */
-export function computeMetrics(data, stableApy = DEFAULTS.stableApy) {
+/* base: "account" = la cuenta nace con capital 1,0 en cash (v2.1, V3, v2.0), así el
+   costo de la primera compra cuenta; "first" = rebasar en la primera fila (para un
+   tramo, p. ej. "solo en vivo", donde la primera fila es el día anterior al tramo). */
+export function computeMetrics(data, stableApy = DEFAULTS.stableApy, costBps = DEFAULTS.costBps, base = "account") {
   if (data.length < 2) return null;
   const cashD = Math.pow(1 + stableApy, 1 / 365) - 1;
   const first = data[0], last = data[data.length - 1];
+  const b = base === "account" ? { strat: 1, hodl: 1, cash: 1 } : { strat: first.strat, hodl: first.hodl, cash: first.cash };
   const days = Math.max(1, (Date.parse(last.date) - Date.parse(first.date)) / 86400000);
   const ex = [];
-  for (let i = 1; i < data.length; i++) ex.push(data[i].strat / data[i - 1].strat - 1 - cashD);
-  const mean = ex.reduce((a, b) => a + b, 0) / ex.length;
-  const sd = Math.sqrt(ex.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, ex.length - 1));
-  const cagr = Math.pow(last.strat / first.strat, 365 / days) - 1;
-  let pk = -Infinity, hodlMaxDD = 0, spk = -Infinity, maxDD = 0;
+  let prev = b.strat;
+  for (let i = base === "account" ? 0 : 1; i < data.length; i++) { ex.push(data[i].strat / prev - 1 - cashD); prev = data[i].strat; }
+  const mean = ex.reduce((a, x) => a + x, 0) / ex.length;
+  const sd = Math.sqrt(ex.reduce((a, x) => a + (x - mean) ** 2, 0) / Math.max(1, ex.length - 1));
+  const totalStrat = last.strat / b.strat - 1;
+  const totalHodl = last.hodl / b.hodl - 1;
+  const cagr = Math.pow(1 + totalStrat, 365 / days) - 1;
+  let pk = b.strat, maxDD = 0, ph = b.hodl, hodlMaxDD = 0;
   for (const d of data) {
-    pk = Math.max(pk, d.hodl); hodlMaxDD = Math.min(hodlMaxDD, d.hodl / pk - 1);
-    spk = Math.max(spk, d.strat); maxDD = Math.min(maxDD, d.strat / spk - 1);
+    pk = Math.max(pk, d.strat); maxDD = Math.min(maxDD, d.strat / pk - 1);
+    ph = Math.max(ph, d.hodl); hodlMaxDD = Math.min(hodlMaxDD, d.hodl / ph - 1);
   }
   const enough = days >= MIN_DAYS_ANNUALIZED;
-  const cashTotal = Number.isFinite(last.cash) && Number.isFinite(first.cash)
-    ? last.cash / first.cash - 1 : Math.pow(1 + cashD, days) - 1;
-  const totalStrat = last.strat / first.strat - 1;
-  const trades = data.filter((d) => Math.abs(d.tradePct) > 1e-9).length;
-  const turnover = data.reduce((a, d) => a + (Number.isFinite(d.tradePct) ? Math.abs(d.tradePct) : 0), 0);
-  const costBps = data.reduce((a, d) => a + (d.tradeCost || 0), 0) * 1e4;
+  const cashTotal = Number.isFinite(last.cash) && Number.isFinite(b.cash)
+    ? last.cash / b.cash - 1 : Math.pow(1 + cashD, days) - 1;
+  const rows = base === "account" ? data : data.slice(1);
+  const trades = rows.filter((d) => Math.abs(d.tradePct) > 1e-9).length;
+  const turnover = rows.reduce((a, d) => a + (Number.isFinite(d.tradePct) ? Math.abs(d.tradePct) : 0), 0);
+  // costo en pb del capital INICIAL del tramo; el escenario retail escala el mismo monto
+  const costBp = rows.reduce((a, d) => a + (d.tradeCost || 0), 0) / b.strat * 1e4;
   return {
     cagr, maxDD, hodlMaxDD, enough, days: Math.round(days), n: data.length,
     sharpe: enough && sd > 1e-9 ? (mean / sd) * Math.sqrt(365) : null,
     calmar: enough && maxDD < -1e-6 ? cagr / Math.abs(maxDD) : null,
-    totalStrat, totalHodl: last.hodl / first.hodl - 1, cashTotal,
+    totalStrat, totalHodl, cashTotal,
     excessOverCash: totalStrat - cashTotal,
-    inMarketShare: data.filter((d) => d.inMarket).length / data.length,
-    trades, turnover, costBps, retailCostBps: turnover * RETAIL_BPS,
+    vsHodl: (1 + totalStrat) / (1 + totalHodl) - 1,
+    inMarketShare: rows.filter((d) => d.inMarket).length / rows.length,
+    avgExposure: rows.reduce((a, d) => a + (Number.isFinite(d.weightReal) ? d.weightReal : 0), 0) / rows.length,
+    trades, turnover, costBps: costBp, retailCostBps: costBp * RETAIL_BPS / costBps,
   };
+}
+
+/* Tramo "solo en vivo": desde el día anterior a la primera fila live (base) hasta el final. */
+export function liveSlice(data) {
+  if (!data?.length || data[0].live == null) return null;
+  const i = data.findIndex((d) => d.live);
+  if (i < 0) return [];
+  return data.slice(Math.max(0, i - 1));
 }
 
 export function withDrawdowns(data) {
@@ -249,23 +270,31 @@ export function compareSeries(tracks) {
 }
 
 /* ------------------------------------------------------------------ ejecución */
-export function shortfall(meta, closeByDate) {
+export function shortfall(meta, closeByDate, tradeByDate = new Map()) {
   const pts = meta
     .map((m) => {
       const close = closeByDate.get(m.lastCandle);
       if (!Number.isFinite(m.spot) || !Number.isFinite(close)) return null;
-      return { run: m.run, date: m.lastCandle, gap: m.spot / close - 1, delayH: m.delayH };
+      const tp = tradeByDate.get(m.lastCandle);
+      return { run: m.run, date: m.lastCandle, gap: m.spot / close - 1, delayH: m.delayH,
+        trade: Number.isFinite(tp) && Math.abs(tp) > 1e-9 ? tp : null };
     })
     .filter(Boolean);
   if (!pts.length) return null;
   const med = (a) => { const s = [...a].sort((x, y) => x - y); const n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; };
   const q = (a, p) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
   const abs = pts.map((p) => Math.abs(p.gap)), dl = pts.map((p) => p.delayH).filter(Number.isFinite);
+  // Solo días con operación: costo = sentido × brecha (compra a precio más alto o venta a
+  // más bajo = costo positivo); impacto = costo × tamaño de la operación (fracción del capital).
+  const tr = pts.filter((p) => p.trade != null).map((p) => ({ ...p, side: Math.sign(p.trade), costPct: Math.sign(p.trade) * p.gap, impact: Math.sign(p.trade) * p.gap * Math.abs(p.trade) }));
   return {
     pts, n: pts.length,
     medAbs: med(abs), p90Abs: q(abs, 0.9),
     mean: pts.reduce((a, p) => a + p.gap, 0) / pts.length,
     medDelay: dl.length ? med(dl) : NaN, maxDelay: dl.length ? Math.max(...dl) : NaN,
+    trades: tr, nTrades: tr.length,
+    tradeMeanCost: tr.length ? tr.reduce((a, p) => a + p.costPct, 0) / tr.length : NaN,
+    tradeImpactBps: tr.reduce((a, p) => a + p.impact, 0) * 1e4,
   };
 }
 
@@ -310,18 +339,20 @@ function ladder(levels, outcomeAt) {
   return merged;
 }
 
-export function scenariosV21(L, band = DEFAULTS.band) {
+export function scenariosV21(L, weightReal, band = DEFAULTS.band) {
   if (!L || !L.v21 || !Number.isFinite(L.v21.signal)) return null;
   const v = L.v21, keys = [20, 60, 120, 250].filter((n) => Number.isFinite(v[`L${n}_ref`]));
   const refs = keys.map((n) => v[`L${n}_ref`]);
   const vs = Number.isFinite(v.vol_scalar) ? v.vol_scalar : 1;
-  const held = v.signal;
+  const held = v.signal;                                    // dispara: cambio de SEÑAL > banda
+  const real = Number.isFinite(weightReal) ? weightReal : held; // sentido: contra la posición REAL
   const outcomeAt = (p) => {
     const votes = refs.filter((r) => p > r).length / refs.length;
     const target = Math.min(1, Math.max(0, votes * vs));
     const trade = Math.abs(target - held) > band;
-    const weight = trade ? target : held;
-    return { votes, target, weight, action: trade ? (target > held ? "COMPRAR" : "VENDER") : "MANTENER" };
+    const weight = trade ? target : real;
+    const action = !trade || Math.abs(target - real) < 1e-9 ? "MANTENER" : (target > real ? "COMPRAR" : "VENDER");
+    return { votes, target, weight, action };
   };
   return {
     price: L.meta.price, date: L.meta.date, current: held, vs,

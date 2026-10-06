@@ -64,41 +64,53 @@ def donchian_ensemble(px, lookbacks=(20,60,120,250)):
 # ---------------------------------------------------------------- accounting
 def simulate(px, target, cost=0.0015, cash_apy=0.0, rebalance="on_change", band=0.0,
              partial=False, start=None, end=None, exec_px=None):
-    """Units/cash accounting (same as v2.1 §4): equity starts 1.0 in cash on `start`.
-    target[t] decided at close t; executed at exec_px[t] (default close t).
-    rebalance: 'on_change' -> trade to target only when target changes (v2.1 rule)
-               'band'      -> trade when |target - actual weight| > band (to target, or to band edge if partial)
-               'daily'     -> trade to target every day (if differs > 1e-9)."""
-    if start is not None: sl = slice(start, end)
-    else: sl = slice(None, end)
+    """Units/cash accounting (v2.1 §4). Equity starts 1.0 in cash on `start`.
+    target[t] is decided at close t.
+      exec_px=None -> traded at close t (registro teórico, igual que los motores).
+      exec_px=Series -> traded LATER at exec_px[t] (p. ej. 05:00 UTC del día t+1).
+        Orden cronológico: (1) cierre t: se marca el capital con las tenencias que
+        había ANTES de operar; (2) después del cierre: se opera a exec_px[t].
+        Si falta exec_px[t] en un día que debe operar, se lanza error (no se rellena).
+    rebalance: 'on_change' | 'band' | 'daily' (ver versión anterior)."""
+    sl = slice(start, end)
     p = px.loc[sl].values; tw = target.loc[sl].values
-    ep = p if exec_px is None else exec_px.loc[sl].fillna(px.loc[sl]).values
     idx = px.loc[sl].index; n = len(p)
+    delayed = exec_px is not None
+    ep = exec_px.reindex(idx).values if delayed else p
     cd = (1 + cash_apy) ** (1 / ANN) - 1
     units = 0.0; cash = 1.0
     eq = np.empty(n); w = np.empty(n); turn = np.zeros(n); costs = np.zeros(n)
     prev_t = 0.0
     for t in range(n):
         if t > 0: cash *= (1 + cd)
-        e_pre = units * ep[t] + cash
-        w_pre = units * ep[t] / e_pre if e_pre > 0 else 0.0
+        if delayed:                                   # (1) marca al cierre, antes de operar
+            eq[t] = units * p[t] + cash
+            w[t] = units * p[t] / eq[t]
+        mark = ep[t]
         tgt = tw[t]
         if rebalance == "on_change": do = (t == 0) or abs(tgt - prev_t) > 1e-12
-        elif rebalance == "band":   do = abs(tgt - w_pre) > band
-        else:                       do = abs(tgt - w_pre) > 1e-9
+        elif rebalance == "band":
+            w_now = units * p[t] / (units * p[t] + cash)
+            do = abs(tgt - w_now) > band
+        else: do = True
         if do:
+            if delayed and not np.isfinite(mark):
+                raise ValueError(f"falta precio de ejecución el {idx[t].date()}")
+            e_pre = units * mark + cash
             goal = tgt
             if rebalance == "band" and partial:
-                goal = tgt + np.sign(w_pre - tgt) * band if abs(tgt - w_pre) > band else w_pre
-                goal = min(max(goal, 0.0), 1.0)
-            dv = goal * e_pre - units * ep[t]
-            if dv > 0: dv = min(dv, cash / (1 + cost))
-            c = abs(dv) * cost
-            units += dv / ep[t]; cash -= dv + c
-            turn[t] = abs(dv) / e_pre; costs[t] = c / e_pre
+                w_pre = units * mark / e_pre
+                goal = min(max(tgt + np.sign(w_pre - tgt) * band, 0.0), 1.0) if abs(tgt - w_pre) > band else w_pre
+            dv = goal * e_pre - units * mark
+            if abs(dv) > 1e-15:
+                if dv > 0: dv = min(dv, cash / (1 + cost))
+                c = abs(dv) * cost
+                units += dv / mark; cash -= dv + c
+                turn[t] = abs(dv) / e_pre; costs[t] = c / e_pre
         prev_t = tgt
-        eq[t] = units * p[t] + cash
-        w[t] = units * p[t] / eq[t]
+        if not delayed:                               # registro teórico: marca después de operar al cierre
+            eq[t] = units * p[t] + cash
+            w[t] = units * p[t] / eq[t]
     return pd.DataFrame({"equity": eq, "weight": w, "turnover": turn, "cost": costs}, index=idx)
 
 def hodl(px, start, end=None, cost=0.0015):

@@ -38,7 +38,31 @@ La de v2.1 §4: units + cash, arranque desde cash, sin rebase, ejecución al cie
 - Robusto a 1 día de atraso (368×) y a 50 pb de costo (227×); pierde contra HODL a 100 pb.
 - Sensible a los plazos: con combinaciones vecinas da entre 92× y 813× (mediana ~280×).
   Los plazos 20/60/120/250 vienen de v2.0, no de la búsqueda.
-- Elegir cada año la "mejor" de 147 reglas rinde menos (147× desde 2017) que esta regla fija (224×).
+- Elegir cada año la "mejor" de 147 reglas rinde menos que esta regla fija. Con el motor
+  units/cash y ejecución a las 05:00 UTC: 38× desde 2017, contra 187× de esta regla y 88× HODL.
+
+### Ejecución realista
+
+El registro opera al cierre (00:00 UTC), pero el cron corre horas después. Simulado con
+precios por minuto de Bitstamp, operando al día siguiente:
+
+| Ejecución | V3 | v2.1 | HODL |
+|---|---|---|---|
+| Cierre (teórico, como el motor) | 483× | 117× | 112× |
+| 00:05 UTC | 445× | 116× | 112× |
+| 01:00 UTC | 414× | 118× | 112× |
+| 05:00 UTC (atraso típico del cron) | 363× | 102× | 112× |
+| 12:00 UTC | 347× | 101× | 112× |
+
+Con el atraso real, V3 conserva unas 3× la ventaja sobre HODL; **v2.1 queda bajo HODL**.
+
+### Límites de esta evidencia
+
+- La regla se eligió después de ver los datos, con capital final como métrica. No hereda el
+  pre-registro de la V3 Donchian (`research/PREREG_v3_candidatos.md`).
+- El 97% de ventanas de 4 años usa ventanas superpuestas: describe la historia, no es una
+  probabilidad de ganar los próximos 4 años.
+- La caída de −70% es un criterio de evaluación, no un límite: la regla no tiene stop.
 
 ## 5. Registro reconstruido
 

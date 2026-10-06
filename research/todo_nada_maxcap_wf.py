@@ -1,7 +1,7 @@
 import sys; sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import pandas as pd, numpy as np
 exec(open(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)),"todo_nada_maxcap.py")).read().split("res=[]")[0])   # reutiliza funciones y datos
-R=pd.read_pickle("maxcap.pkl")
+R=pd.read_pickle("todo_nada_maxcap.pkl")
 # reconstruir pesos de todos los candidatos (mismo orden) para walk-forward
 import importlib
 src=open(__import__("os").path.join(__import__("os").path.dirname(__import__("os").path.abspath(__file__)),"todo_nada_maxcap.py")).read()

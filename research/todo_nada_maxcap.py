@@ -74,7 +74,7 @@ add("H semanal","20/60/120/250 ≥3/4 lunes",b.where(b.index.dayofweek==0).ffill
 # referencias
 add("Ref","HODL",pd.Series(1.0,index=px.index))
 add("Ref","v2.1",lib.band_held(lib.v21_target(px)[0]))
-R=pd.DataFrame(res); R.to_pickle("maxcap.pkl")
+R=pd.DataFrame(res); R.to_pickle("todo_nada_maxcap.pkl")
 print("candidatos:",len(R))
 pd.set_option("display.width",250); pd.set_option("display.max_rows",400)
 cols=["fam","name","final","maxdd","IS","OOS","wins","med_ratio","min_ratio"]

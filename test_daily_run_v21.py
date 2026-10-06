@@ -237,3 +237,26 @@ def test_short_sheet_row_does_not_crash():
     sheet[-1] = sheet[-1][:-2]                           # sin code_sha / generated_at
     ok, diffs, _ = io21.verify_consistency(tr, sheet)
     assert ok, diffs
+
+
+# --------------------------------------------------------------------------
+# Continuidad de la serie diaria (v2.1.2)
+# --------------------------------------------------------------------------
+def test_validate_daily_series_accepts_complete():
+    s = pd.Series(np.linspace(1, 2, 10), index=pd.date_range("2026-01-01", periods=10, freq="D"))
+    assert io21.validate_daily_series(s, start="2026-01-01") is s
+
+
+def test_validate_daily_series_rejects_gap():
+    s = pd.Series(np.linspace(1, 2, 10), index=pd.date_range("2026-01-01", periods=10, freq="D"))
+    with pytest.raises(ValueError, match="faltan 1"):
+        io21.validate_daily_series(s.drop(s.index[4]))
+
+
+def test_validate_daily_series_rejects_missing_start_and_bad_prices():
+    s = pd.Series(np.linspace(1, 2, 10), index=pd.date_range("2026-01-03", periods=10, freq="D"))
+    with pytest.raises(ValueError, match="faltan 2"):
+        io21.validate_daily_series(s, start="2026-01-01")
+    s2 = s.copy(); s2.iloc[3] = 0.0
+    with pytest.raises(ValueError, match="no válidos"):
+        io21.validate_daily_series(s2)

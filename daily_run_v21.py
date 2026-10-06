@@ -72,6 +72,27 @@ def _clean_close_series(close):
     return close.astype(float)
 
 
+def validate_daily_series(close, start=None):
+    """Exige una vela por día calendario, precios finitos y positivos.
+
+    Las señales usan shift(L) por POSICIÓN: si falta una vela, "hace 20 días" pasa
+    a ser hace 21 sin aviso. Ante un hueco no se escribe nada (la decisión es humana);
+    rellenarlo cambiaría los datos de entrada del registro.
+    Devuelve la serie si está completa; lanza ValueError con el detalle si no."""
+    if len(close) == 0:
+        raise ValueError("serie vacía")
+    bad = close[~np.isfinite(close.values) | (close.values <= 0)]
+    if len(bad):
+        raise ValueError(f"precios no válidos en {[d.strftime('%Y-%m-%d') for d in bad.index[:5]]}")
+    first = pd.Timestamp(start) if start is not None else close.index[0]
+    full = pd.date_range(first, close.index[-1], freq="D")
+    missing = full.difference(close.index)
+    if len(missing):
+        raise ValueError(f"faltan {len(missing)} vela(s) diaria(s): "
+                         f"{[d.strftime('%Y-%m-%d') for d in missing[:10]]}")
+    return close
+
+
 def _http_json(url, timeout=30):
     req = urllib.request.Request(url, headers={"User-Agent": "btc-paper-v21/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -105,6 +126,7 @@ def fetch_prices():
         raise RuntimeError("Coinbase no devolvió velas")
 
     close = _clean_close_series(pd.Series(rows).sort_index())
+    validate_daily_series(close, start=_download_start())
     if len(close) < max(e21.LOOKBACKS) + 5:
         raise RuntimeError(
             f"Coinbase devolvió {len(close)} velas; se requieren "

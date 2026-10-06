@@ -156,8 +156,14 @@ def _worksheet(sh, title, columns):
 
 
 def _sheet_rows(ws):
-    """Todas las filas de datos del Sheet, sin header."""
-    values = ws.get_all_values()
+    """Todas las filas de datos del Sheet, sin header.
+
+    UNFORMATTED_VALUE: devuelve los números tal como se escribieron con RAW, no
+    como los MUESTRA el Sheet. Con FORMATTED_VALUE (default de gspread) el
+    resultado depende del formato de celda y del locale de la planilla
+    (es_CL muestra "64050,51"), y la guarda veía forks inexistentes."""
+    from gspread.utils import ValueRenderOption
+    values = ws.get_all_values(value_render_option=ValueRenderOption.unformatted)
     return [r for r in values[1:] if r and r[0]]
 
 
@@ -171,11 +177,16 @@ def verify_consistency(tr, sheet_rows, k=CONSISTENCY_K):
 
     Devuelve (ok: bool, diffs: list, n_checked: int).
     """
-    recomputed = e21.df_to_rows_v21(tr)[-k:] if k else e21.df_to_rows_v21(tr)
-    diffs = e21.rows_mismatch(recomputed, sheet_rows)
+    # Ventana = las últimas k fechas YA ESCRITAS, no las últimas k recomputadas.
+    # Si el Sheet quedó atrasado más de k días (p.ej. tras semanas de corridas
+    # fallidas), la ventana sobre lo recomputado no tocaría ninguna fila escrita
+    # y la guarda pasaría sin verificar nada.
     dates_in_sheet = {r[0] for r in sheet_rows}
-    n_checked = sum(1 for r in recomputed if r[0] in dates_in_sheet)
-    return (not diffs), diffs, n_checked
+    recomputed = [r for r in e21.df_to_rows_v21(tr) if r[0] in dates_in_sheet]
+    if k:
+        recomputed = recomputed[-k:]
+    diffs = e21.rows_mismatch(recomputed, sheet_rows)
+    return (not diffs), diffs, len(recomputed)
 
 
 def log_meta_run(sh, **fields):

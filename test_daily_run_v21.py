@@ -27,7 +27,7 @@ class FakeWorksheet:
     def row_values(self, n):
         return self.columns if n == 1 else []
 
-    def get_all_values(self):
+    def get_all_values(self, **kwargs):
         return [self.columns] + self.rows
 
     def append_rows(self, rows, value_input_option=None):
@@ -41,14 +41,16 @@ class FakeWorksheet:
         self.updates.append((values, range_name))
 
 
-def make_tr(n=40, seed=3):
+def make_tr(n=40, seed=3, generated_at="2026-08-17 00:31:00", sha="abc123", drop_last=0):
     rng = np.random.default_rng(seed)
     px = pd.Series(
         60000 * np.exp(np.cumsum(rng.normal(0.0005, 0.02, 700))),
         index=pd.date_range("2024-06-01", periods=700, freq="D"))
+    if drop_last:
+        px = px.iloc[:-drop_last]
     return e21.compute_track_record_v21(
-        px, paper_start=px.index[700 - n], price_source="coinbase",
-        code_sha="abc123", generated_at_utc="2026-08-17 00:31:00")
+        px, paper_start=pd.Timestamp("2024-06-01") + pd.Timedelta(days=700 - n),
+        price_source="coinbase", code_sha=sha, generated_at_utc=generated_at)
 
 
 # --------------------------------------------------------------------------
@@ -175,3 +177,63 @@ def test_empty_window_produces_no_rows():
     assert e21.new_rows_v21(tr, []) == []
     ok, diffs, _ = io21.verify_consistency(tr, [])
     assert ok and diffs == []
+
+
+# --------------------------------------------------------------------------
+# Regresión v2.1.1 — la guarda declaraba FORK todos los días desde la 2ª corrida
+# --------------------------------------------------------------------------
+def _as_sheets_unformatted(rows):
+    """Lo que devuelve Sheets con UNFORMATTED_VALUE tras escribir con RAW:
+    floats enteros vuelven como int (1.0 -> 1), el resto como número."""
+    out = []
+    for r in rows:
+        out.append([int(v) if isinstance(v, float) and v.is_integer() else v for v in r])
+    return out
+
+
+def test_consistency_ignores_provenance_of_previous_run():
+    """Ayer escribió otra corrida (otro timestamp, otro commit): NO es un fork."""
+    yesterday = make_tr(drop_last=1, generated_at="2026-10-05 00:31:10", sha="aaaa1111")
+    today = make_tr(generated_at="2026-10-06 00:31:05", sha="bbbb2222")
+    sheet = e21.df_to_rows_v21(yesterday)
+    ok, diffs, n = io21.verify_consistency(today, sheet)
+    assert ok, diffs
+    assert n == min(io21.CONSISTENCY_K, len(sheet))
+
+
+def test_consistency_tolerates_sheets_number_representation():
+    """1.0 vuelve como 1, 3.9e-06 como float: no es divergencia."""
+    tr = make_tr()
+    sheet = _as_sheets_unformatted(e21.df_to_rows_v21(tr))
+    ok, diffs, _ = io21.verify_consistency(tr, sheet)
+    assert ok, diffs
+
+
+def test_consistency_still_detects_one_quantum_change():
+    """La tolerancia (medio cuanto) no puede ocultar un cambio real del valor redondeado."""
+    tr = make_tr()
+    sheet = _as_sheets_unformatted(e21.df_to_rows_v21(tr))
+    idx = e21.COLUMNS_V21.index("equity")
+    sheet[-3][idx] = float(sheet[-3][idx]) + 1e-10      # 1 cuanto (10 decimales)
+    ok, diffs, _ = io21.verify_consistency(tr, sheet)
+    assert not ok and diffs[0][1] == "equity"
+
+
+def test_consistency_checks_written_rows_after_long_gap():
+    """Sheet atrasado > K días: la guarda debe verificar las filas escritas, no 0."""
+    tr = make_tr(n=60)
+    sheet = e21.df_to_rows_v21(tr)[:5]                   # 55 días sin escribir
+    ok, _, n = io21.verify_consistency(tr, sheet, k=30)
+    assert ok and n == 5
+    forked = [list(r) for r in sheet]
+    forked[2][1] = 11111.11
+    assert not io21.verify_consistency(tr, forked, k=30)[0]
+
+
+def test_short_sheet_row_does_not_crash():
+    """Sheets recorta celdas vacías al final de la fila."""
+    tr = make_tr()
+    sheet = [list(r) for r in e21.df_to_rows_v21(tr)]
+    sheet[-1] = sheet[-1][:-2]                           # sin code_sha / generated_at
+    ok, diffs, _ = io21.verify_consistency(tr, sheet)
+    assert ok, diffs

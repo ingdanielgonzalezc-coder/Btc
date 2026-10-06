@@ -230,11 +230,36 @@ def new_rows_v21(tr, existing_dates):
     return [row for row in df_to_rows_v21(tr) if row[0] not in existing]
 
 
+# Columnas que describen la CORRIDA que escribió la fila, no su contenido.
+# Cambian legítimamente en cada corrida (timestamp) y en cada commit (SHA), así
+# que NO se reconcilian: compararlas declaraba "fork" todos los días desde la
+# segunda corrida (bug v2.1.0 → corregido en v2.1.1; la señal no cambia).
+PROVENANCE_COLS = frozenset({"code_sha", "generated_at_utc"})
+
+
+def _cell_equal(col, sheet_val, new_val):
+    """
+    Numéricas: se comparan como números con tolerancia de medio cuanto del
+    redondeo de _safe. Cualquier cambio real del valor redondeado mueve al menos
+    un cuanto completo, así que la guarda sigue detectando todo fork real; lo que
+    absorbe es la representación ("1" vs "1.0", "3.9e-06" vs "0.0000039").
+    Texto: igualdad exacta de strings.
+    """
+    if col not in _ROUND:
+        return str(sheet_val) == str(new_val)
+    if sheet_val in ("", None) or new_val in ("", None):
+        return str(sheet_val or "") == str(new_val or "")
+    try:
+        a, b = float(sheet_val), float(new_val)
+    except (TypeError, ValueError):
+        return False
+    return abs(a - b) <= 0.5 * 10 ** -_ROUND[col]
+
+
 def rows_mismatch(recomputed, sheet_rows):
     """
     Guarda de integridad (parte pura). Compara filas recomputadas contra las del
-    sheet como STRINGS EXACTOS: el redondeo de _safe es determinista, así que la
-    comparación exacta es válida y evita tolerancias flotantes.
+    sheet, columna por columna, excluyendo PROVENANCE_COLS.
 
     Devuelve lista de (fecha, columna, valor_sheet, valor_recomputado).
     Vacía = consistente. Política del caller: mismatch -> NO appendear, exit 1.
@@ -246,6 +271,9 @@ def rows_mismatch(recomputed, sheet_rows):
         if ref is None:
             continue                                    # fecha aún no escrita
         for i, col in enumerate(COLUMNS_V21):
-            if str(ref[i]) != str(row[i]):
-                diffs.append((row[0], col, str(ref[i]), str(row[i])))
+            if col in PROVENANCE_COLS:
+                continue
+            sheet_val = ref[i] if i < len(ref) else ""  # Sheets recorta vacíos finales
+            if not _cell_equal(col, sheet_val, row[i]):
+                diffs.append((row[0], col, str(sheet_val), str(row[i])))
     return diffs

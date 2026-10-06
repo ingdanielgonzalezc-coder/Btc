@@ -1,0 +1,165 @@
+"""Backtest framework for BTC trend strategies (v2.1 replica + V3 candidates)."""
+import numpy as np, pandas as pd
+ANN = 365
+import os
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.join(HERE, "data", "btc_daily_bitstamp.csv")
+
+def load_prices(end="2026-10-05"):
+    d = pd.read_csv(DATA, index_col=0, parse_dates=True)
+    return d.loc[:end, "close"].astype(float)
+
+# ---------------------------------------------------------------- signals
+def ewm_vol(px, span=30):
+    return px.pct_change().ewm(span=span).std() * np.sqrt(ANN)
+
+def v21_target(px, lookbacks=(20,60,120,250), target_vol=0.50, span=30, cap=1.0):
+    trend = pd.concat([(px > px.shift(L)).astype(float) for L in lookbacks], axis=1).mean(axis=1)
+    vs = (target_vol / ewm_vol(px, span)).clip(upper=cap)
+    return (trend * vs).clip(0, cap).fillna(0.0), trend, vs
+
+def band_held(target, band=0.10):
+    held, out = 0.0, []
+    for tw in target.values:
+        if abs(tw - held) > band: held = tw
+        out.append(held)
+    return pd.Series(out, index=target.index)
+
+def cont_trend(px, lookbacks=(20,60,120,250), span=30):
+    """Continuous risk-adjusted momentum per lookback, mapped to [0,1] by normal CDF.
+    z_L = log(P_t/P_{t-L}) / (sigma_daily * sqrt(L))  (Baz et al. 2015 style normalisation)."""
+    from scipy.stats import norm
+    sd = np.log(px).diff().ewm(span=span).std()
+    zs = []
+    for L in lookbacks:
+        z = np.log(px / px.shift(L)) / (sd * np.sqrt(L))
+        zs.append(pd.Series(norm.cdf(z.values), index=px.index).where(z.notna()))
+    return pd.concat(zs, axis=1).mean(axis=1)
+
+def hysteresis(score, enter, exit_):
+    """Binary state: on when score >= enter, off when score <= exit_, else keep."""
+    on, out = 0.0, []
+    for s in score.values:
+        if np.isnan(s): out.append(0.0); continue
+        if on == 0.0 and s >= enter: on = 1.0
+        elif on == 1.0 and s <= exit_: on = 0.0
+        out.append(on)
+    return pd.Series(out, index=score.index)
+
+def donchian_ensemble(px, lookbacks=(20,60,120,250)):
+    """Zarattini et al. style: per lookback, long when close breaks N-day high, flat when it breaks
+    the trailing midpoint/low; here: long after close > max(prev N), exit when close < min(prev N/2)."""
+    states = []
+    for L in lookbacks:
+        hi = px.shift(1).rolling(L).max(); lo = px.shift(1).rolling(max(L//2, 5)).min()
+        on, out = 0.0, []
+        for p, h, l in zip(px.values, hi.values, lo.values):
+            if np.isnan(h): out.append(0.0); continue
+            if on == 0.0 and p > h: on = 1.0
+            elif on == 1.0 and p < l: on = 0.0
+            out.append(on)
+        states.append(pd.Series(out, index=px.index))
+    return pd.concat(states, axis=1).mean(axis=1)
+
+# ---------------------------------------------------------------- accounting
+def simulate(px, target, cost=0.0015, cash_apy=0.0, rebalance="on_change", band=0.0,
+             partial=False, start=None, end=None, exec_px=None):
+    """Units/cash accounting (same as v2.1 §4): equity starts 1.0 in cash on `start`.
+    target[t] decided at close t; executed at exec_px[t] (default close t).
+    rebalance: 'on_change' -> trade to target only when target changes (v2.1 rule)
+               'band'      -> trade when |target - actual weight| > band (to target, or to band edge if partial)
+               'daily'     -> trade to target every day (if differs > 1e-9)."""
+    if start is not None: sl = slice(start, end)
+    else: sl = slice(None, end)
+    p = px.loc[sl].values; tw = target.loc[sl].values
+    ep = p if exec_px is None else exec_px.loc[sl].fillna(px.loc[sl]).values
+    idx = px.loc[sl].index; n = len(p)
+    cd = (1 + cash_apy) ** (1 / ANN) - 1
+    units = 0.0; cash = 1.0
+    eq = np.empty(n); w = np.empty(n); turn = np.zeros(n); costs = np.zeros(n)
+    prev_t = 0.0
+    for t in range(n):
+        if t > 0: cash *= (1 + cd)
+        e_pre = units * ep[t] + cash
+        w_pre = units * ep[t] / e_pre if e_pre > 0 else 0.0
+        tgt = tw[t]
+        if rebalance == "on_change": do = (t == 0) or abs(tgt - prev_t) > 1e-12
+        elif rebalance == "band":   do = abs(tgt - w_pre) > band
+        else:                       do = abs(tgt - w_pre) > 1e-9
+        if do:
+            goal = tgt
+            if rebalance == "band" and partial:
+                goal = tgt + np.sign(w_pre - tgt) * band if abs(tgt - w_pre) > band else w_pre
+                goal = min(max(goal, 0.0), 1.0)
+            dv = goal * e_pre - units * ep[t]
+            if dv > 0: dv = min(dv, cash / (1 + cost))
+            c = abs(dv) * cost
+            units += dv / ep[t]; cash -= dv + c
+            turn[t] = abs(dv) / e_pre; costs[t] = c / e_pre
+        prev_t = tgt
+        eq[t] = units * p[t] + cash
+        w[t] = units * p[t] / eq[t]
+    return pd.DataFrame({"equity": eq, "weight": w, "turnover": turn, "cost": costs}, index=idx)
+
+def hodl(px, start, end=None, cost=0.0015):
+    p = px.loc[start:end]
+    return (1 - cost) * p / p.iloc[0]
+
+# ---------------------------------------------------------------- metrics
+def metrics(eq, cash_apy=0.0):
+    r = eq.pct_change().dropna()
+    yrs = len(r) / ANN
+    cagr = eq.iloc[-1] ** (1 / yrs) - 1
+    vol = r.std() * np.sqrt(ANN)
+    ex = r - ((1 + cash_apy) ** (1 / ANN) - 1)
+    sharpe = ex.mean() / r.std() * np.sqrt(ANN) if r.std() > 0 else np.nan
+    dd = eq / eq.cummax() - 1
+    mdd = dd.min()
+    calmar = cagr / abs(mdd) if mdd < 0 else np.nan
+    down = r[r < 0].std() * np.sqrt(ANN)
+    sortino = r.mean() * ANN / down if down > 0 else np.nan
+    return dict(CAGR=cagr, Vol=vol, Sharpe=sharpe, Sortino=sortino, MaxDD=mdd, Calmar=calmar,
+                Skew=r.skew(), Kurt=r.kurt(), Years=yrs, Final=eq.iloc[-1])
+
+def summarize(res, cash_apy=0.0):
+    m = metrics(res["equity"], cash_apy)
+    yrs = m["Years"]
+    m.update(Exposure=res["weight"].mean(), TurnoverPY=res["turnover"].sum() / yrs,
+             TradesPY=(res["turnover"] > 1e-9).sum() / yrs, CostPY=res["cost"].sum() / yrs)
+    return m
+
+# ---------------------------------------------------------------- inference
+def sharpe_se(r):
+    """Lo (2002)/Mertens SE of the (per-period) Sharpe, with skew/kurt adjustment, annualised."""
+    from scipy.stats import skew, kurtosis
+    sr = r.mean() / r.std(); n = len(r); g3 = skew(r); g4 = kurtosis(r, fisher=False)
+    se = np.sqrt((1 - g3 * sr + (g4 - 1) / 4 * sr ** 2) / (n - 1))
+    return sr * np.sqrt(ANN), se * np.sqrt(ANN)
+
+def deflated_sharpe(r, n_trials, sr_trials_var):
+    """Bailey & López de Prado (2014). r: daily returns of the chosen strategy.
+    sr_trials_var: variance of the (per-period, non-annualised) Sharpes across trials."""
+    from scipy.stats import norm, skew, kurtosis
+    sr = r.mean() / r.std(); n = len(r); g3 = skew(r); g4 = kurtosis(r, fisher=False)
+    emc = 0.5772156649
+    sr0 = np.sqrt(sr_trials_var) * ((1 - emc) * norm.ppf(1 - 1 / n_trials) + emc * norm.ppf(1 - 1 / (n_trials * np.e)))
+    z = (sr - sr0) * np.sqrt(n - 1) / np.sqrt(1 - g3 * sr + (g4 - 1) / 4 * sr ** 2)
+    return norm.cdf(z), sr0 * np.sqrt(ANN)
+
+def stationary_bootstrap_idx(n, mean_block, rng):
+    idx = np.empty(n, dtype=int); i = rng.integers(n)
+    p = 1.0 / mean_block
+    for t in range(n):
+        idx[t] = i
+        i = rng.integers(n) if rng.random() < p else (i + 1) % n
+    return idx
+
+def boot_sharpe_diff(ra, rb, B=2000, block=20, seed=0):
+    """Paired stationary bootstrap (Politis-Romano 1994) of annualised Sharpe(a)-Sharpe(b)."""
+    rng = np.random.default_rng(seed); a = ra.values; b = rb.values; n = len(a); out = np.empty(B)
+    for k in range(B):
+        ix = stationary_bootstrap_idx(n, block, rng)
+        x, y = a[ix], b[ix]
+        out[k] = (x.mean() / x.std() - y.mean() / y.std()) * np.sqrt(ANN)
+    d = (a.mean() / a.std() - b.mean() / b.std()) * np.sqrt(ANN)
+    return d, np.percentile(out, [2.5, 97.5]), (out <= 0).mean()

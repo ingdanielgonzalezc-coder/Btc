@@ -1,0 +1,16 @@
+import sys; sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+import pandas as pd, numpy as np, lib
+px=lib.load_prices()
+tgt,trend,vs=lib.v21_target(px)
+VS=vs.fillna(0)
+def C0(a,b,c=0.0015): return lib.simulate(px,lib.band_held(tgt),cost=c,start=a,end=b)
+ct=lib.cont_trend(px).fillna(0)
+def C1(a,b,c=0.0015): return lib.simulate(px,(ct*VS).clip(0,1),cost=c,start=a,end=b,rebalance="band",band=0.10)
+def C2(a,b,c=0.0015): return lib.simulate(px,(ct*VS).clip(0,1),cost=c,start=a,end=b,rebalance="band",band=0.10,partial=True)
+wk=lib.band_held(tgt); wk=wk.where(wk.index.dayofweek==0).ffill().fillna(0)
+def C3(a,b,c=0.0015): return lib.simulate(px,wk,cost=c,start=a,end=b)
+dc=lib.donchian_ensemble(px)
+def C4(a,b,c=0.0015): return lib.simulate(px,(dc*VS).clip(0,1),cost=c,start=a,end=b,rebalance="band",band=0.10)
+t5,_,_=lib.v21_target(px,lookbacks=(60,120,250))
+def C5(a,b,c=0.0015): return lib.simulate(px,lib.band_held(t5),cost=c,start=a,end=b)
+CANDS={"C0":C0,"C1":C1,"C2":C2,"C3":C3,"C4":C4,"C5":C5}

@@ -20,3 +20,20 @@ python build_cone.py  # rango esperado del dashboard (dashboard/src/cone.json)
 `lib.simulate` reproduce la contabilidad de `engine_v21` (diferencia 0.0 en equity),
 y `test_engine_v3.py::test_matches_reference_backtest` ata el motor de producción a esta referencia.
 Los datos (Bitstamp, ~90 MB) no se versionan.
+
+## V3 todo/nada (reemplaza a la V3 Donchian antes de su primera fila)
+
+Selección hecha con criterio de **capital final**, no de Sharpe:
+
+```bash
+python todo_nada_binary.py        # todo/nada vs escalonado, por umbral
+python todo_nada_frontier.py      # mezclas y topes de volatilidad
+python todo_nada_maxcap.py        # 147 reglas en 9 familias (capital final, años de inicio)
+python todo_nada_maxcap_wf.py     # walk-forward: elegir la mejor cada año vs regla fija
+python todo_nada_hyst_check.py    # ventanas móviles 1–4 años, vecindad de la histéresis
+python todo_nada_verify_binary.py # cálculo independiente, atraso de 1 día, costos, tramos
+```
+
+Resultado: 20/60/120/250 ≥3 de 4 (plazos heredados de v2.0, no elegidos por la búsqueda)
+da 486× desde 2014 contra 114× HODL. Las reglas que la superan en el backtest no resisten
+la vecindad de parámetros ni el walk-forward (147× vs 224× desde 2017).

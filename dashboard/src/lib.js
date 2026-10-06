@@ -60,7 +60,7 @@ export function normalizeDates(raw) {
 /* ------------------------------------------------------------------ pestañas */
 export function detectKind(fields) {
   const f = new Set(fields || []);
-  if (f.has("donchian_score")) return "v3";
+  if (f.has("votes_up") || f.has("donchian_score")) return "v3";
   if (f.has("signal_weight")) return "v21";
   if (f.has("strat_equity")) return "v20";
   if (f.has("run_at_utc") && f.has("consistency")) return "meta";
@@ -99,8 +99,7 @@ export function parseTrack(rows, costBps = DEFAULTS.costBps) {
         cash: toNum(r.cash_equity),
         dd: toNum(r.drawdown),
         source: String(pick(r, "price_source") || "").trim(),
-        nextBuy: toNum(r.next_buy_above),
-        nextSell: toNum(r.next_sell_below),
+        live: r.live == null || r.live === "" ? null : toNum(r.live) === 1,
       };
     })
     .filter((r) => r.date && Number.isFinite(r.strat));
@@ -305,8 +304,8 @@ function ladder(levels, outcomeAt) {
   const merged = [];
   for (const s of segs) {
     const prev = merged.at(-1);
-    if (prev && prev.action === s.action && Math.abs(prev.weight - s.weight) < 1e-9) prev.hi = s.hi;
-    else merged.push({ ...s });
+    if (prev && prev.action === s.action && Math.abs(prev.weight - s.weight) < 1e-9) { prev.hi = s.hi; prev.votesHi = s.votes; }
+    else merged.push({ ...s, votesHi: s.votes });
   }
   return merged;
 }
@@ -331,22 +330,28 @@ export function scenariosV21(L, band = DEFAULTS.band) {
   };
 }
 
-export function scenariosV3(L, weightReal, band = DEFAULTS.band) {
-  if (!L || !L.v3 || !Number.isFinite(L.v3.score)) return null;
-  const v = L.v3, ns = [20, 60, 120, 250].filter((n) => Number.isFinite(v[`L${n}_state`]));
-  const vs = Number.isFinite(v.vol_scalar) ? v.vol_scalar : 1;
-  const w = Number.isFinite(weightReal) ? weightReal : (Number.isFinite(v.weight) ? v.weight : v.target);
-  const ch = ns.map((n) => ({ n, on: v[`L${n}_state`] === 1, entry: v[`L${n}_entry`], exit: v[`L${n}_exit`] }));
+export function scenariosV3(L) {
+  // V3 todo/nada: 100% si al menos min_votes plazos quedan al alza; si no, 0%.
+  if (!L || !L.v3 || !Number.isFinite(L.v3.target)) return null;
+  const v = L.v3, keys = [20, 60, 120, 250].filter((n) => Number.isFinite(v[`L${n}_ref`]));
+  const refs = keys.map((n) => v[`L${n}_ref`]);
+  const need = Number.isFinite(v.min_votes) ? v.min_votes : 3;
+  const held = v.target;
   const outcomeAt = (p) => {
-    const score = ch.filter((c) => (c.on ? !(p < c.exit) : p > c.entry)).length / ch.length;
-    const target = Math.min(1, Math.max(0, score * vs));
-    const trade = Math.abs(target - w) > band;
-    const weight = trade ? target : w;
-    return { votes: score, target, weight, action: trade ? (target > w ? "COMPRAR" : "VENDER") : "MANTENER" };
+    const up = refs.filter((r) => p > r).length;
+    const target = up >= need ? 1 : 0;
+    return { votes: up / refs.length, target, weight: target, action: target === held ? "MANTENER" : (target > held ? "COMPRAR" : "VENDER") };
   };
   return {
-    price: L.meta.price, date: L.meta.date, current: w, vs, hypothetical: !Number.isFinite(weightReal) && !Number.isFinite(v.weight),
-    rows: ladder(ch.map((c) => (c.on ? c.exit : c.entry)), outcomeAt),
-    detail: ch.map((c) => ({ n: c.n, state: c.on, level: c.on ? c.exit : c.entry })),
+    price: L.meta.price, date: L.meta.date, current: held, vs: 1, need,
+    rows: ladder(refs, outcomeAt),
+    detail: keys.map((n) => ({ n, state: v[`L${n}_state`] === 1, level: v[`L${n}_ref`] })),
   };
+}
+
+/* Primera fecha registrada en vivo (las anteriores se reconstruyeron). */
+export function firstLiveDate(data) {
+  if (!data || !data.length || data[0].live == null) return null;
+  const d = data.find((r) => r.live);
+  return d && d !== data[0] ? d.date : null;
 }

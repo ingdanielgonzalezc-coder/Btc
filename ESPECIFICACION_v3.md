@@ -1,71 +1,59 @@
-# Especificación V3 — BTC Paper Trading (challenger)
+# Especificación V3 — BTC Paper Trading: todo o nada
 
-**Estado:** propuesta, pendiente de congelar
+**Estado:** congelada al primer push
 **Relación con v2.1:** corre en paralelo; v2.1 sigue siendo el registro oficial.
-**Nombre:** en la convención de `ESPECIFICACION_v2.1.md` esta versión es la familia
-"tendencia + histéresis" reservada como v4.0. Se llama V3 por decisión del dueño;
-el linaje ML (v3.0 en la spec anterior) queda sin número asignado.
+**Reemplaza:** a la V3 Donchian (2026-10-06), que nunca escribió una fila.
 
 ---
 
-## 1. Por qué existe
+## 1. Objetivo
 
-Selección pre-registrada (`research/PREREG_v3_candidatos.md`) entre 5 rediseños de v2.1,
-elegida con datos 2014–2021 y evaluada una sola vez en 2022–2026 (Bitstamp, 15 pb, cash 0%).
+Maximizar el capital final. Se aceptan caídas mayores que v2.1 a cambio de estar
+completo en BTC cuando la tendencia es clara.
 
-| Métrica 2022–2026 | v2.1 | V3 |
-|---|---|---|
-| Sharpe | 0,86 | 0,78 |
-| CAGR | 22,0% | 16,7% |
-| MaxDD | −26,9% | −20,9% |
-| Operaciones/año | 67 | 27 |
-| Turnover/año | 15,8× | 6,0× |
-| Exposición media | 0,51 | 0,38 |
-
-Diferencia de Sharpe −0,07, IC 95% bootstrap pareado [−0,36, +0,21]: **no es mejor en
-retorno ajustado por riesgo**. Lo que ofrece: 62% menos turnover, 6 pp menos de drawdown,
-y supera a v2.1 cuando el costo real es ≥ 50 pb por unidad de turnover.
-
-## 2. Señal (congelada al lanzar)
+## 2. Regla (congelada)
 
 ```python
-for N in (20, 60, 120, 250):
-    entra si close_t > max(close_{t-N..t-1})
-    sale  si close_t < min(close_{t-M..t-1}),  M = max(N/2, 5)
-donchian_score = promedio de los 4 estados
-vol_scalar     = min(1, 0.50 / (ret.ewm(span=30).std() * sqrt(365)))   # = v2.1
-target         = clip(donchian_score * vol_scalar, 0, 1)
+votos_t = Σ_{L in (20, 60, 120, 250)} [P_t > P_{t-L}]     # el trend_score de v2.1 × 4
+objetivo_t = 1 si votos_t >= 3, si no 0
 ```
 
-Estados path-dependent, recomputados desde `PAPER_START_V3 − 420 días` en cada corrida.
+Se opera solo cuando el objetivo cambia (0 ↔ 1), al cierre de la señal.
+Sin vol-targeting, sin banda, sin apalancamiento.
 
 ## 3. Contabilidad
 
-Idéntica a v2.1 §4 (units + cash, arranque desde cash, sin rebase, sin apalancamiento,
-ejecución al cierre, mismo `FEE + SLIP = 7 pb` y `STABLE_APY = 4%` para comparar like-for-like),
-**salvo el rebalanceo**: se opera cuando `|target − peso real| > 0.10`, al target completo.
+La de v2.1 §4: units + cash, arranque desde cash, sin rebase, ejecución al cierre,
+`FEE + SLIP = 7 pb` y cash a 4% anual, para comparar like-for-like.
 
-Conocido y aceptado: una posición residual < 10% puede quedar abierta con target 0, y un
-target < 10% desde cero no se compra (46 de 4.661 días en 2014–2026).
+## 4. Evidencia (Bitstamp, 15 pb, cash 0%)
 
-## 4. Columnas (`track_record_v3`)
+| Desde 2014 | V3 todo/nada | v2.1 | HODL |
+|---|---|---|---|
+| Capital final | 486× | 118× | 114× |
+| Peor caída | −60% | −41% | −83% |
+| Ventanas de 4 años en que gana a HODL | 97% | — | — |
+| Operaciones al año | 17 | 65 | 0 |
 
-Las de v2.1, más `d20 d60 d120 d250` (estado de cada canal), `donchian_score`,
-`next_buy_above` y `next_sell_below`: los cierres de mañana que encienden o apagan al
-menos un canal. Se conocen hoy y son la base del panel "precios de giro" del dashboard.
+- Robusto a 1 día de atraso (368×) y a 50 pb de costo (227×); pierde contra HODL a 100 pb.
+- Sensible a los plazos: con combinaciones vecinas da entre 92× y 813× (mediana ~280×).
+  Los plazos 20/60/120/250 vienen de v2.0, no de la búsqueda.
+- Elegir cada año la "mejor" de 147 reglas rinde menos (147× desde 2017) que esta regla fija (224×).
 
-## 5. Comparación pre-registrada contra v2.1
+## 5. Registro reconstruido
 
-- Métrica primaria: diferencia de Sharpe diaria, bootstrap estacionario pareado (bloque 20 d).
-- Se revisa una vez al año desde `PAPER_START_V3`. Ningún cambio antes de 3 años.
-- V3 reemplaza a v2.1 solo si el IC 95% de la diferencia excluye 0 a favor de V3, **o**
-  si el costo real medido (fills reales) supera 40 pb por unidad de turnover.
-- Con tracking error ~10% anual, detectar 5 pp/año de diferencia toma ~15 años:
-  lo esperable es que el criterio estadístico no se cumpla, y la decisión la tome el costo.
+`PAPER_START_V3 = 2026-08-17` (igual que v2.1) para compararlas en el mismo gráfico.
+Las filas con fecha anterior a `LIVE_FROM_V3 = 2026-10-06` se calcularon después de los
+hechos y llevan `live = 0`. Son deterministas (los mismos precios dan las mismas filas),
+pero **no son evidencia forward**: la comparación honesta empieza en `LIVE_FROM_V3`.
+Si el push ocurre después del 7 de octubre de 2026 (UTC), mover `LIVE_FROM_V3` a la
+primera vela posterior al push en el mismo commit.
 
-## 6. Secuencia de lanzamiento
+En el tramo reconstruido (17-ago a 5-oct) V3 hizo +3,2%, contra +14,4% de v2.1 y +32,9% de
+HODL: entró tarde al rally y operó 7 veces en un mercado lateral. 50 días no dicen nada
+sobre la regla; se deja escrito para que nadie lo descubra después y quiera ajustar.
 
-1. Tests en verde (`pytest -q`, 67 tests).
-2. Commit + push de esta spec, `engine_v3.py`, `daily_run_v3.py`, `research/`.
-3. Verificar que `PAPER_START_V3` sea **posterior** al push (por defecto 2026-10-12).
-4. Primera corrida. Sin backfill.
+## 6. Comparación contra v2.1
+
+Revisión anual desde `LIVE_FROM_V3`. Métrica primaria: capital final relativo, y peor caída
+como restricción (no peor que −70%). Ningún cambio de regla antes de 4 años (un ciclo).

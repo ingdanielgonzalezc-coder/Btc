@@ -43,21 +43,18 @@ def test_v21_signal_matches_engine():
     assert d[("v21", "signal")] == round(float(sig["signal_weight"]), 6)
 
 
-def test_v3_levels_flip_channels():
+def test_v3_refs_predict_tomorrow_target():
+    """Con los refs publicados, el objetivo de V3 de mañana se puede anticipar."""
     px = make_prices(seed=12)
     d = as_dict(dl.build_levels(px))
     start = pd.Timestamp(e3.PAPER_START_V3) - pd.Timedelta(days=e3.WARMUP_DAYS)
     p3 = px[px.index >= start]
-    for L in e3.LOOKBACKS:
-        on = d[("v3", f"L{L}_state")]
-        if on:
-            lvl = d[("v3", f"L{L}_exit")]
-            nxt = e3.donchian_states(tomorrow(p3, lvl * 0.9999))[f"d{L}"].iloc[-1]
-            assert nxt == 0.0
-        else:
-            lvl = d[("v3", f"L{L}_entry")]
-            nxt = e3.donchian_states(tomorrow(p3, lvl * 1.0001))[f"d{L}"].iloc[-1]
-            assert nxt == 1.0
+    refs = [d[("v3", f"L{L}_ref")] for L in e3.LOOKBACKS]
+    for price in sorted(refs) + [max(refs) * 1.05, min(refs) * 0.95]:
+        for p in (price * 1.0001, price * 0.9999):
+            expected = float(sum(p > r for r in refs) >= e3.MIN_VOTES)
+            got = e3.compute_signal_v3(tomorrow(p3, p))["target_weight"].iloc[-1]
+            assert got == expected
 
 
 def test_meta_and_shape():

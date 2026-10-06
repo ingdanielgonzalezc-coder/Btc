@@ -17,4 +17,4 @@ CANDS={"C0":C0,"C1":C1,"C2":C2,"C3":C3,"C4":C4,"C5":C5}
 
 # Objetivos de producción, usados por build_cone.py
 held_v21 = lib.band_held(tgt)
-target_v3 = (dc*VS).clip(0,1)
+target_v3 = lib.band_held((trend >= 0.75 - 1e-12).astype(float))   # V3 todo/nada ≥3 de 4

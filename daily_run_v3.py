@@ -1,5 +1,5 @@
 """
-daily_run_v3.py — Capa de I/O de V3 (challenger en paralelo a v2.1)
+daily_run_v3.py — Capa de I/O de V3 todo/nada (en paralelo a v2.1)
 ================================================================================
 Misma infraestructura que daily_run_v21.py: Coinbase como fuente única, guarda de
 consistencia antes de escribir, RAW, procedencia por fila. Escribe en su propia
@@ -58,6 +58,20 @@ def verify_consistency_v3(tr, sheet_rows, k=CONSISTENCY_K):
     return (not diffs), diffs, len(recomputed)
 
 
+def _worksheet_v3(sh):
+    """Pestaña de V3. Si existe con OTRO esquema y sin filas de datos (quedó de la
+    V3 Donchian, que nunca escribió), se limpia entera para no dejar columnas
+    viejas a la derecha. Con filas de datos nunca se toca: eso sería un fork."""
+    import gspread
+    try:
+        ws = sh.worksheet(e3.SHEET_TAB_V3)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=e3.SHEET_TAB_V3, rows=2000, cols=len(e3.COLUMNS_V3))
+    if ws.row_values(1) != e3.COLUMNS_V3 and not io21._sheet_rows(ws):
+        ws.clear()
+    return io21._ensure_header(ws, e3.COLUMNS_V3)
+
+
 def log_meta_run_v3(sh, **fields):
     try:
         ws = io21._worksheet(sh, META_TAB_V3, io21.META_COLUMNS)
@@ -78,7 +92,7 @@ def main():
                                     generated_at_utc=run_at)
 
     sh = io21._open_sheet()
-    ws = io21._worksheet(sh, e3.SHEET_TAB_V3, e3.COLUMNS_V3)
+    ws = _worksheet_v3(sh)
     existing = io21._sheet_rows(ws)
     meta = dict(run_at_utc=run_at, code_sha=sha, price_source=source,
                 last_candle=precios.index[-1].strftime("%Y-%m-%d"),
@@ -103,11 +117,11 @@ def main():
     print(f"OK | V3: {len(tr)} filas | sheet tenía {len(existing)} | +{len(to_add)} nuevas")
     if len(tr) > 0:
         last = tr.iloc[-1]
+        n_rec = int((tr["live"] == 0).sum())
         print(f"Hoy ({tr.index[-1].date()}): {last['action']} | "
-              f"score={last['donchian_score']:.2f} target={last['target_weight']:.2f} "
+              f"plazos al alza={int(last['votes_up'])}/4 objetivo={last['target_weight']:.0f} "
               f"w_real={last['weight_post']:.4f} | px={last['btc_price']:.0f} | "
-              f"compra si cierra > {last['next_buy_above']:.0f} | "
-              f"vende si cierra < {last['next_sell_below']:.0f}")
+              f"equity={last['equity']:.6f} | filas reconstruidas={n_rec}")
     else:
         print(f"Aún no hay velas cerradas desde PAPER_START_V3 ({e3.PAPER_START_V3}).")
 

@@ -1,157 +1,98 @@
 """
-engine_v3.py — Motor V3 del paper trading BTC (challenger, corre en paralelo a v2.1)
+engine_v3.py — Motor V3 del paper trading BTC: TODO O NADA (corre en paralelo a v2.1)
 ================================================================================
-Señal: ensemble de 4 canales Donchian (20/60/120/250 días) × vol-targeting 50%.
-  - Cada canal ENTRA cuando el cierre supera el máximo de los N cierres previos
-    y SALE cuando el cierre cae bajo el mínimo de los N/2 cierres previos
-    (histéresis incorporada: entrar exige más que mantenerse).
-  - donchian_score = promedio de los 4 estados (0, .25, .5, .75, 1).
-  - target = score × min(1, 0.50 / vol_EWMA30)  — mismo vol-targeting que v2.1.
+Regla: 100% BTC cuando al menos 3 de los 4 plazos (20/60/120/250 días) están al alza
+(precio de hoy > precio de hace L días); 0% (cash) cuando quedan 2 o menos.
 
-Contabilidad: la de v2.1 (units + cash, arranque desde cash, sin rebase) con UNA
-diferencia de rebalanceo: se opera cuando |target − peso REAL| > BAND, y se va
-al target completo. La banda mide la posición real (Gârleanu–Pedersen), no un
-objetivo teórico; eso es lo que baja el turnover de ~14 a ~5 vueltas/año.
+  - El voto por plazo es EXACTAMENTE el trend_score de v2.1 (mismos plazos, misma
+    comparación estricta). V3 solo cambia qué se hace con él: no hay escalones ni
+    vol-targeting; o se está completo o se está fuera.
+  - Rebalanceo solo cuando el objetivo cambia (0 ↔ 1). Entre cambios, nada.
 
-Comportamiento conocido (idéntico al backtest que justificó la versión):
-  - con target < BAND desde una posición nula, no se compra;
-  - una posición residual < BAND puede quedar abierta con target 0.
-  En 2014–2026 ocurrió 46 de 4.661 días, siempre con peso < 10%.
+Objetivo explícito: maximizar el capital final, aceptando caídas mayores que v2.1.
+Backtest Bitstamp 2014–2026, 15 pb: 486× vs 114× HODL vs 118× v2.1; peor caída −60%.
+Ver ESPECIFICACION_v3.md y research/run_todo_nada.py.
 
-Determinismo: igual que v2.1. Estado recomputado desde el día 0 en cada corrida.
-Selección: pre-registrada (PREREG_v3_candidatos.md), ver ESPECIFICACION_v3.md.
+Contabilidad: la de v2.1 (units + cash, arranque desde cash, sin rebase, sin
+apalancamiento, ejecución al cierre). Determinismo: estado recomputado desde el día 0.
+
+Registro reconstruido: PAPER_START_V3 se fijó en 2026-08-17 (mismo inicio que v2.1)
+para comparar ambas en el gráfico. Las filas con fecha < LIVE_FROM_V3 se calcularon
+DESPUÉS de los hechos (columna live = 0). Son deterministas, pero no son evidencia
+forward: la comparación honesta empieza en LIVE_FROM_V3.
 """
 
 import numpy as np
 import pandas as pd
 
-# ===== Parámetros compartidos con v2.1 (comparación like-for-like) =====
-TARGET_VOL = 0.50
-EWMA_SPAN  = 30
-CAP        = 1.0
-BAND       = 0.10
+# ===== Parámetros (compartidos con v2.1 para comparar like-for-like) =====
+LOOKBACKS  = (20, 60, 120, 250)
 FEE        = 0.0004
 SLIP       = 0.0003
 STABLE_APY = 0.04
 ANN        = 365
 
-# ===== Parámetros propios de V3 (congelados) =====
-LOOKBACKS  = (20, 60, 120, 250)
-EXIT_FRAC  = 0.5          # salida = mínimo de N·EXIT_FRAC cierres previos
-EXIT_MIN   = 5
+# ===== Parámetro propio de V3 (congelado) =====
+MIN_VOTES  = 3            # plazos al alza necesarios para estar 100% invertido
 
-# ===== Despliegue — congelar al lanzar (debe ser POSTERIOR al push) =====
-PAPER_START_V3 = "2026-10-12"
+# ===== Despliegue =====
+PAPER_START_V3 = "2026-08-17"   # = PAPER_START_V21, para comparar en el mismo gráfico
+LIVE_FROM_V3   = "2026-10-06"   # primera vela registrada en vivo (cierra 00:00 UTC del 07-10)
 WARMUP_DAYS    = 420
 SHEET_TAB_V3   = "track_record_v3"
 
 COLUMNS_V3 = [
     "date", "btc_price", "price_source",
-    "d20", "d60", "d120", "d250", "donchian_score", "vol_scalar", "target_weight",
-    "next_buy_above", "next_sell_below",
+    "votes_up", "trend_score", "target_weight",
     "weight_pre", "weight_post", "action", "trade_pct", "trade_cost",
     "units", "cash", "equity",
     "daily_return", "hodl_equity", "cash_equity", "drawdown",
-    "code_sha", "generated_at_utc",
+    "live", "code_sha", "generated_at_utc",
 ]
 PROVENANCE_COLS = frozenset({"code_sha", "generated_at_utc"})
 
 _ROUND = {
-    "btc_price": 2, "d20": 0, "d60": 0, "d120": 0, "d250": 0,
-    "donchian_score": 6, "vol_scalar": 6, "target_weight": 6,
-    "next_buy_above": 2, "next_sell_below": 2,
+    "btc_price": 2, "votes_up": 0, "trend_score": 6, "target_weight": 6,
     "weight_pre": 6, "weight_post": 6, "trade_pct": 6, "trade_cost": 10,
     "units": 10, "cash": 10, "equity": 10,
-    "daily_return": 8, "hodl_equity": 8, "cash_equity": 8, "drawdown": 8,
+    "daily_return": 8, "hodl_equity": 8, "cash_equity": 8, "drawdown": 8, "live": 0,
 }
 
 CASH_D = (1 + STABLE_APY) ** (1 / ANN) - 1
 COST_R = FEE + SLIP
-_EPS_ACTION = 1e-9
-
-
-def exit_window(n):
-    return max(int(n * EXIT_FRAC), EXIT_MIN)
+_EPS = 1e-9
 
 
 # ============================================================================
 # SEÑAL
 # ============================================================================
-def donchian_states(precios):
-    """Estado 0/1 por canal. Path-dependent: recorre la serie completa descargada.
-    Sin lookahead: el día t solo compara contra cierres t-1 y anteriores."""
-    px = precios.to_numpy(dtype=float)
-    out = {}
-    for n in LOOKBACKS:
-        hi = precios.shift(1).rolling(n).max().to_numpy()
-        lo = precios.shift(1).rolling(exit_window(n)).min().to_numpy()
-        on, st = 0.0, np.zeros(len(px))
-        for t in range(len(px)):
-            if np.isnan(hi[t]):
-                st[t] = 0.0
-                continue
-            if on == 0.0 and px[t] > hi[t]:
-                on = 1.0
-            elif on == 1.0 and px[t] < lo[t]:
-                on = 0.0
-            st[t] = on
-        out[f"d{n}"] = st
-    return pd.DataFrame(out, index=precios.index)
-
-
-def next_levels(precios, states):
-    """Umbrales para el CIERRE DE MAÑANA, conocidos hoy (para el dashboard):
-       next_buy_above  = menor máximo-N entre canales apagados (NaN si todos encendidos)
-       next_sell_below = mayor mínimo-N/2 entre canales encendidos (NaN si todos apagados)
-    Un cierre mañana > next_buy_above enciende al menos un canal; < next_sell_below
-    apaga al menos uno."""
-    buy = pd.Series(np.inf, index=precios.index)
-    sell = pd.Series(-np.inf, index=precios.index)
-    for n in LOOKBACKS:
-        hi_tomorrow = precios.rolling(n).max()                 # incluye el cierre de hoy
-        lo_tomorrow = precios.rolling(exit_window(n)).min()
-        off = states[f"d{n}"] == 0.0
-        buy = buy.where(~off, np.minimum(buy, hi_tomorrow))
-        sell = sell.where(off, np.maximum(sell, lo_tomorrow))
-    return buy.replace(np.inf, np.nan), sell.replace(-np.inf, np.nan)
-
-
 def compute_signal_v3(precios):
     if not precios.index.is_monotonic_increasing:
         raise ValueError("serie de precios desordenada")
     if precios.index.has_duplicates:
         raise ValueError("serie de precios con fechas duplicadas")
-
-    ret = precios.pct_change()
-    states = donchian_states(precios)
-    score = states.mean(axis=1)
-    vol = ret.ewm(span=EWMA_SPAN).std() * np.sqrt(ANN)
-    vol_scalar = (TARGET_VOL / vol).clip(upper=CAP)
-    target = (score * vol_scalar.fillna(0.0)).clip(0.0, CAP).fillna(0.0)
-    buy, sell = next_levels(precios, states)
-
+    votes = pd.concat([(precios > precios.shift(L)).astype(float) for L in LOOKBACKS], axis=1)
+    votes_up = votes.sum(axis=1)
     sig = pd.DataFrame({
-        "btc_price": precios, "daily_return": ret,
-        **{c: states[c] for c in states.columns},
-        "donchian_score": score, "vol_scalar": vol_scalar, "target_weight": target,
-        "next_buy_above": buy, "next_sell_below": sell,
+        "btc_price": precios,
+        "daily_return": precios.pct_change(),
+        "votes_up": votes_up,
+        "trend_score": votes.mean(axis=1),
+        "target_weight": (votes_up >= MIN_VOTES).astype(float),
     })
     sig.index.name = "date"
     return sig
 
 
 # ============================================================================
-# CONTABILIDAD
+# CONTABILIDAD (v2.1 §4, con rebalanceo solo al cambiar el objetivo 0 ↔ 1)
 # ============================================================================
 def run_accounting_v3(sig):
-    """Como v2.1 (§4 de su spec) salvo la regla de rebalanceo:
-    operar cuando |target − peso real| > BAND, al target completo."""
     n = len(sig)
     cols = ["weight_pre", "weight_post", "trade_pct", "trade_cost",
             "units", "cash", "equity", "hodl_equity", "cash_equity"]
     if n == 0:
         return pd.DataFrame(columns=cols, index=sig.index)
-
     px = sig["btc_price"].to_numpy(dtype=float)
     tw = sig["target_weight"].to_numpy(dtype=float)
     ret = sig["daily_return"].to_numpy(dtype=float)
@@ -163,16 +104,14 @@ def run_accounting_v3(sig):
             cash *= (1 + CASH_D)
         eq_pre = units * px[t] + cash
         w_pre = units * px[t] / eq_pre
-
         dv = cost = 0.0
-        if abs(tw[t] - w_pre) > BAND:
+        if t == 0 or tw[t] != tw[t - 1]:
             dv = tw[t] * eq_pre - units * px[t]
             if dv > 0.0:                                   # sin apalancamiento
                 dv = min(dv, cash / (1.0 + COST_R))
             cost = abs(dv) * COST_R
             units += dv / px[t]
             cash -= dv + cost
-
         eq = units * px[t] + cash
         out["weight_pre"][t] = w_pre
         out["weight_post"][t] = units * px[t] / eq
@@ -194,14 +133,16 @@ def run_accounting_v3(sig):
 
 
 def compute_track_record_v3(precios, paper_start, price_source="",
-                            code_sha="", generated_at_utc=""):
+                            code_sha="", generated_at_utc="", live_from=None):
+    live_from = pd.Timestamp(live_from or LIVE_FROM_V3)
     sig = compute_signal_v3(precios)
     sig = sig.iloc[max(LOOKBACKS):]
     sig = sig[sig.index >= pd.Timestamp(paper_start)]
     acc = run_accounting_v3(sig)
     df = pd.concat([sig, acc], axis=1)
-    df["action"] = np.where(df["trade_pct"] > _EPS_ACTION, "COMPRAR",
-                     np.where(df["trade_pct"] < -_EPS_ACTION, "VENDER", "MANTENER"))
+    df["action"] = np.where(df["trade_pct"] > _EPS, "COMPRAR",
+                     np.where(df["trade_pct"] < -_EPS, "VENDER", "MANTENER"))
+    df["live"] = (df.index >= live_from).astype(float)
     df["price_source"] = price_source
     df["code_sha"] = code_sha
     df["generated_at_utc"] = generated_at_utc

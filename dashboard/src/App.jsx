@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import cone from "./cone.json";
 import {
   parseTrack, parseMeta, parseLevels, assumptionsFrom, computeMetrics, compareSeries,
-  shortfall, health, scenariosV21, scenariosV3, daysStale, STALE_AFTER_DAYS, MIN_DAYS_ANNUALIZED, RETAIL_BPS,
+  shortfall, health, scenariosV21, scenariosV3, firstLiveDate, daysStale, STALE_AFTER_DAYS, MIN_DAYS_ANNUALIZED, RETAIL_BPS,
 } from "./lib.js";
 import { SOURCE_DEFS, loadUrls, saveUrls, clearSavedUrls, loadAll } from "./sources.js";
 import {
@@ -13,7 +13,7 @@ import {
 
 const VERSIONS = [
   { key: "v21", label: "v2.1 · oficial" },
-  { key: "v3", label: "V3 · challenger" },
+  { key: "v3", label: "V3 · todo/nada" },
   { key: "v20", label: "v2.0 · legado" },
 ];
 
@@ -66,13 +66,15 @@ export default function App() {
   const hActive = active === "v3" ? h3 : h21;
 
   const sc = useMemo(() => {
-    if (active === "v3") return scenariosV3(levels, last?.weightReal, A.band);
+    if (active === "v3") return scenariosV3(levels);
     return scenariosV21(levels, A.band);
   }, [active, levels, last, A.band]);
   const levelsStale = levels && last && levels.meta.date !== last.date;
 
   const stale = last ? daysStale(last.date) : null;
   const coneKey = active === "v3" ? "v3" : "v21";
+  const v3Live = useMemo(() => firstLiveDate(tracks.v3), [tracks.v3]);
+  const v3AllRec = !!tracks.v3?.length && tracks.v3.every((d) => d.live === false);
   const hasCash = data.some((d) => Number.isFinite(d.cash));
 
   function applySources() {
@@ -177,8 +179,12 @@ export default function App() {
             <div className="panel">
               <div className="eyebrow">Señal</div>
               <div style={{ fontSize: 13, marginTop: 8, lineHeight: 1.7 }}>
-                <div>{active === "v3" ? "score Donchian" : "tendencia"} <span style={{ color: "var(--gold)" }}>{num(last.trend, 2)}</span></div>
-                <div>vol scalar <span style={{ color: "var(--steel)" }}>{num(last.volScalar, 2)}</span></div>
+                {active === "v3"
+                  ? <div>plazos al alza <span style={{ color: "var(--gold)" }}>{Math.round(last.trend * 4)} de 4</span><div className="sub">100% con 3 o más</div></div>
+                  : <>
+                      <div>tendencia <span style={{ color: "var(--gold)" }}>{num(last.trend, 2)}</span></div>
+                      <div>vol scalar <span style={{ color: "var(--steel)" }}>{num(last.volScalar, 2)}</span></div>
+                    </>}
               </div>
             </div>
           </div>
@@ -191,8 +197,9 @@ export default function App() {
             <HealthPanel title="Salud de las corridas · V3" h={h3} />
           </div>
 
-          <EquityChart data={data} cone={active === "v20" ? null : cone} coneKey={coneKey} hasCash={hasCash} color={color} />
-          <CompareChart cmp={cmp} />
+          <EquityChart data={data} cone={active === "v20" ? null : cone} coneKey={coneKey} hasCash={hasCash} color={color}
+            liveStart={active === "v3" ? v3Live : null} allReconstructed={active === "v3" && v3AllRec} />
+          <CompareChart cmp={cmp} liveStart={v3Live} />
           <div className="two">
             <DrawdownChart data={data} color={color} />
             <ExposureChart data={data} color={color} />
@@ -225,11 +232,11 @@ export default function App() {
             <div className="eyebrow" style={{ marginBottom: 10 }}>Decisiones recientes · {VERSION_NAME[active]}</div>
             <div className="scroll">
               <table>
-                <thead><tr>{["Fecha", "BTC", active === "v3" ? "Score" : "Tendencia", "Objetivo", "Señal", "Real", "Decisión", "Costo", "Capital"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Fecha", "BTC", "Tendencia", "Objetivo", "Señal", "Real", "Decisión", "Costo", "Capital"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
                 <tbody>
                   {[...data].slice(-14).reverse().map((d) => (
                     <tr key={d.date}>
-                      <td>{d.date}</td>
+                      <td>{d.date}{d.live === false ? <span className="sub" title="fila reconstruida"> · rec.</span> : ""}</td>
                       <td>{usd(d.btc)}</td>
                       <td style={{ color: "var(--gold)" }}>{num(d.trend, 2)}</td>
                       <td>{pct(d.target, 0)}</td>

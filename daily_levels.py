@@ -12,9 +12,8 @@ Formato largo (section, key, value), fácil de extender sin romper el parser:
     meta | date        | 2026-10-05
     v21  | L250_state  | 0
     v21  | L250_ref    | 84513.2      # mañana el plazo vota arriba si cierra > ref
-    v3   | L20_state   | 1
-    v3   | L20_entry   | 86594.94     # canal apagado: se enciende si cierra > entry
-    v3   | L20_exit    | 83456.74     # canal encendido: se apaga si cierra < exit
+    v3   | votes_up    | 3            # plazos al alza hoy; V3 está 100% si >= min_votes
+    v3   | L250_ref    | 84513.2      # mismas referencias que v2.1
 """
 
 import os
@@ -74,22 +73,20 @@ def build_levels(precios, generated_at_utc="", code_sha=""):
             ("v21", f"L{L}_ref", _fmt(p21.iloc[-L], 2)),
         ]
 
-    # ---- V3: estados path-dependent desde SU inicio de descarga
-    sig3 = e3.compute_signal_v3(p3)
-    s3 = sig3.iloc[-1]
-    rows += [
-        ("v3", "score", _fmt(s3["donchian_score"])),
-        ("v3", "target", _fmt(s3["target_weight"])),
-        ("v3", "vol_scalar", _fmt(s3["vol_scalar"])),
-    ]
+    # ---- V3 todo/nada: mismos plazos y referencias que v2.1; 100% si ≥ MIN_VOTES arriba
+    s3 = e3.compute_signal_v3(p3).iloc[-1]
     tr3 = e3.compute_track_record_v3(p3, e3.PAPER_START_V3)
-    rows.append(("v3", "weight", _fmt(tr3["weight_post"].iloc[-1]) if len(tr3) else ""))
+    rows += [
+        ("v3", "votes_up", int(s3["votes_up"])),
+        ("v3", "trend", _fmt(s3["trend_score"])),
+        ("v3", "target", _fmt(s3["target_weight"])),
+        ("v3", "min_votes", e3.MIN_VOTES),
+        ("v3", "weight", _fmt(tr3["weight_post"].iloc[-1]) if len(tr3) else ""),
+    ]
     for L in e3.LOOKBACKS:
-        on = int(s3[f"d{L}"] == 1.0)
         rows += [
-            ("v3", f"L{L}_state", on),
-            ("v3", f"L{L}_entry", _fmt(p3.iloc[-L:].max(), 2)),
-            ("v3", f"L{L}_exit", _fmt(p3.iloc[-e3.exit_window(L):].min(), 2)),
+            ("v3", f"L{L}_state", int(p3.iloc[-1] > p3.iloc[-1 - L])),
+            ("v3", f"L{L}_ref", _fmt(p3.iloc[-L], 2)),
         ]
     return [list(r) for r in rows]
 

@@ -7,7 +7,7 @@ const env = import.meta.env || {};
 
 export const SOURCE_DEFS = [
   { key: "v21", kind: "v21", label: "Registro v2.1 (oficial)", tab: "track_record_v21", env: env.VITE_CSV_V21 || env.VITE_CSV_URL || "" },
-  { key: "v3", kind: "v3", label: "Registro V3 (challenger)", tab: "track_record_v3", env: env.VITE_CSV_V3 || "" },
+  { key: "v3", kind: "v3", label: "Registro V3 (todo/nada)", tab: "track_record_v3", env: env.VITE_CSV_V3 || "" },
   { key: "v20", kind: "v20", label: "Registro v2.0 (legado)", tab: "track_record", env: env.VITE_CSV_V20 || "" },
   { key: "meta", kind: "meta", label: "Corridas de v2.1", tab: "meta_runs", env: env.VITE_CSV_META || "" },
   { key: "meta_v3", kind: "meta", label: "Corridas de V3", tab: "meta_runs_v3", env: env.VITE_CSV_META_V3 || "" },

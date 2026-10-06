@@ -135,13 +135,15 @@ export function FlipPanel({ sc, version, note }) {
       </div>
       <div className="scroll" style={{ marginTop: 10 }}>
         <table>
-          <thead><tr><th>Cierre de mañana</th><th>Distancia</th><th>{version === "v3" ? "Score" : "Tendencia"}</th><th>Peso resultante</th><th>Decisión</th></tr></thead>
+          <thead><tr><th>Cierre de mañana</th><th>Distancia</th><th>{version === "v3" ? "Plazos al alza" : "Tendencia"}</th><th>Peso resultante</th><th>Decisión</th></tr></thead>
           <tbody>
             {[...sc.rows].reverse().map((r, i) => (
               <tr key={i} className={r === now ? "now" : ""}>
                 <td>{label(r)}{r === now ? "  ← hoy" : ""}</td>
                 <td>{dist(r)}</td>
-                <td>{num(r.votes, 2)}</td>
+                <td>{version === "v3"
+                  ? (Math.round(r.votes * 4) === Math.round(r.votesHi * 4) ? `${Math.round(r.votes * 4)} de 4` : `${Math.round(r.votes * 4)}–${Math.round(r.votesHi * 4)} de 4`)
+                  : (Math.abs(r.votes - r.votesHi) < 1e-9 ? num(r.votes, 2) : `${num(r.votes, 2)}–${num(r.votesHi, 2)}`)}</td>
                 <td>{pct(r.weight, 0)}</td>
                 <td style={{ color: actionColor(r.action), fontWeight: 600 }}>{actionLabel(r.action)}</td>
               </tr>
@@ -151,14 +153,14 @@ export function FlipPanel({ sc, version, note }) {
       </div>
       <div className="sub" style={{ marginTop: 8 }}>
         {version === "v3"
-          ? "Cada canal encendido se apaga si el cierre perfora su mínimo de N/2 días; uno apagado se enciende si supera su máximo de N días. Opera si el objetivo se aleja más de 10 pp del peso real."
-          : "Cada plazo vota arriba si el cierre de mañana supera el de hace L días. Opera si la señal se mueve más de 10 pp."}
-        {" "}Supone volatilidad sin cambio (vol scalar {num(sc.vs, 2)}).{sc.hypothetical ? " V3 aún no tiene posición: se usa el objetivo como peso." : ""}{note ? ` ${note}` : ""}
+          ? `Cada plazo vota arriba si el cierre de mañana supera el de hace L días (los mismos que v2.1). V3 queda 100% en BTC con ${sc.need} o más plazos al alza y 0% con menos.`
+          : `Cada plazo vota arriba si el cierre de mañana supera el de hace L días. Opera si la señal se mueve más de 10 pp. Supone volatilidad sin cambio (vol scalar ${num(sc.vs, 2)}).`}
+        {note ? ` ${note}` : ""}
       </div>
       <div className="row" style={{ marginTop: 8 }}>
         {sc.detail.map((d) => (
           <Pill key={d.n} color={d.state ? "var(--buy)" : "var(--muted)"} title={`umbral ${usd(d.level)}`}>
-            {d.n}d {version === "v3" ? (d.state ? "encendido" : "apagado") : (d.state ? "arriba" : "abajo")} · {usd(d.level)}
+            {d.n}d {d.state ? "arriba" : "abajo"} · {usd(d.level)}
           </Pill>
         ))}
       </div>
@@ -213,7 +215,7 @@ export function HealthPanel({ title, h }) {
 }
 
 /* ------------------------------------------------------------------ gráficos */
-export function EquityChart({ data, cone, coneKey, hasCash, color }) {
+export function EquityChart({ data, cone, coneKey, hasCash, color, liveStart, allReconstructed }) {
   const [logScale, setLogScale] = useState(true);
   const [showCone, setShowCone] = useState(true);
   const rows = useMemo(() => {
@@ -263,6 +265,7 @@ export function EquityChart({ data, cone, coneKey, hasCash, color }) {
         <ComposedChart data={rows} margin={{ top: 8, right: 8, left: 4, bottom: 0 }}>
           <CartesianGrid stroke="var(--line)" strokeDasharray="2 4" vertical={false} />
           {spans.map(([a, b], i) => <ReferenceArea key={i} x1={a} x2={b} fill="var(--gold)" fillOpacity={0.05} stroke="none" />)}
+          {liveStart && <ReferenceLine x={liveStart} stroke="var(--text)" strokeDasharray="4 3" label={{ value: "en vivo →", position: "insideTopLeft", fill: "var(--muted)", fontSize: 11 }} />}
           <XAxis dataKey="date" ticks={dateTicks(rows)} {...axisProps} />
           <YAxis scale={logScale ? "log" : "linear"} domain={["auto", "auto"]} allowDataOverflow
             tickFormatter={(v) => `${v.toFixed(2)}×`} width={56} {...axisProps} />
@@ -287,21 +290,27 @@ export function EquityChart({ data, cone, coneKey, hasCash, color }) {
         </ComposedChart>
       </ResponsiveContainer>
       <div className="sub" style={{ marginTop: 6 }}>
-        Bandas doradas = en mercado. {cone ? `El rango gris es el 50% y 90% central de 4.000 trayectorias simuladas con los retornos diarios 2022–2026 del backtest${outside ? "; hoy la estrategia está FUERA de ese rango" : "; hoy la estrategia está dentro"}.` : ""}
+        Bandas doradas = en mercado. {liveStart ? `Antes del ${liveStart} el registro es reconstruido (calculado después, con las mismas reglas); la evidencia en vivo empieza en la línea punteada. ` : allReconstructed ? "Todo el registro mostrado es reconstruido: aún no hay días en vivo. " : ""}{cone ? `El rango gris es el 50% y 90% central de 4.000 trayectorias simuladas con los retornos diarios 2022–2026 del backtest${outside ? "; hoy la estrategia está FUERA de ese rango" : "; hoy la estrategia está dentro"}.` : ""}
       </div>
     </div>
   );
 }
 
-export function CompareChart({ cmp }) {
+export function CompareChart({ cmp, liveStart }) {
+  const [hidden, setHidden] = useState({});
   if (!cmp.rows.length || cmp.keys.length < 2) return null;
   const last = cmp.rows.at(-1);
+  const toggle = (k) => setHidden({ ...hidden, [k]: !hidden[k] });
   return (
     <div className="panel">
       <div className="eyebrow">Comparación de versiones · base común {cmp.start}</div>
       <div className="row" style={{ fontSize: 12, marginTop: 4 }}>
         {[...cmp.keys, "hodl"].map((k) => (
-          <span key={k} style={{ color: VERSION_COLOR[k] }}>● {VERSION_NAME[k]} {last[k] != null ? pct(last[k] - 1) : "—"}</span>
+          <button key={k} type="button" onClick={() => toggle(k)} aria-pressed={!hidden[k]} title="Mostrar u ocultar"
+            style={{ background: "transparent", border: "1px solid var(--line)", borderRadius: 999, padding: "3px 10px", cursor: "pointer",
+              font: "inherit", fontSize: 12, color: VERSION_COLOR[k], opacity: hidden[k] ? 0.4 : 1, textDecoration: hidden[k] ? "line-through" : "none" }}>
+            ● {VERSION_NAME[k]} {last[k] != null ? pct(last[k] - 1) : "—"}
+          </button>
         ))}
       </div>
       <ResponsiveContainer width="100%" height={240}>
@@ -311,11 +320,12 @@ export function CompareChart({ cmp }) {
           <YAxis domain={["auto", "auto"]} tickFormatter={(v) => `${v.toFixed(2)}×`} width={56} {...axisProps} />
           <ReferenceLine y={1} stroke="var(--line)" />
           <Tooltip contentStyle={tipBox} labelStyle={{ color: "var(--muted)" }} formatter={(v, k) => [`${num(v, 4)}×`, VERSION_NAME[k] || k]} />
-          <Line dataKey="hodl" stroke="var(--steel)" strokeWidth={1.2} dot={false} isAnimationActive={false} connectNulls />
-          {cmp.keys.map((k) => <Line key={k} dataKey={k} stroke={VERSION_COLOR[k]} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />)}
+          {liveStart && <ReferenceLine x={liveStart} stroke="var(--teal)" strokeDasharray="4 3" label={{ value: "V3 en vivo →", position: "insideTopLeft", fill: "var(--muted)", fontSize: 11 }} />}
+          {!hidden.hodl && <Line dataKey="hodl" stroke="var(--steel)" strokeWidth={1.2} dot={false} isAnimationActive={false} connectNulls />}
+          {cmp.keys.filter((k) => !hidden[k]).map((k) => <Line key={k} dataKey={k} stroke={VERSION_COLOR[k]} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />)}
         </LineChart>
       </ResponsiveContainer>
-      <div className="sub">Todas rebasadas a 1 en la fecha en que empezó la versión más reciente con datos. Mismos precios, distintas reglas.</div>
+      <div className="sub">Todas rebasadas a 1 en la fecha en que empezó la versión más reciente con datos. Mismos precios, distintas reglas. Toca una etiqueta para mostrarla u ocultarla.{liveStart ? ` V3 está reconstruida antes del ${liveStart}.` : ""}</div>
     </div>
   );
 }

@@ -10,7 +10,7 @@ H, STEP, B, BLOCK = 1095, 5, 4000, 20
 rng = np.random.default_rng(2026)
 out = {"horizon_days": list(range(0, H + 1, STEP)), "pcts": [5, 25, 50, 75, 95],
        "source": "bootstrap estacionario de retornos diarios 2022-01-01..2026-10-05, 7 pb, cash 4%"}
-for name, tgt, kw in [("v21", held_v21, {}), ("v3", target_v3, {"rebalance": "band", "band": 0.10})]:
+for name, tgt, kw in [("v21", held_v21, {}), ("v3", target_v3, {})]:
     r = lib.simulate(px, tgt, cost=0.0007, cash_apy=0.04, start="2022-01-01", **kw).equity.pct_change().dropna().values
     n = len(r); paths = np.empty((B, H))
     for b in range(B):

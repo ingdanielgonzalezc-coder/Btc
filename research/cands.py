@@ -14,3 +14,7 @@ def C4(a,b,c=0.0015): return lib.simulate(px,(dc*VS).clip(0,1),cost=c,start=a,en
 t5,_,_=lib.v21_target(px,lookbacks=(60,120,250))
 def C5(a,b,c=0.0015): return lib.simulate(px,lib.band_held(t5),cost=c,start=a,end=b)
 CANDS={"C0":C0,"C1":C1,"C2":C2,"C3":C3,"C4":C4,"C5":C5}
+
+# Objetivos de producción, usados por build_cone.py
+held_v21 = lib.band_held(tgt)
+target_v3 = (dc*VS).clip(0,1)

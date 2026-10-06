@@ -1,47 +1,48 @@
 # BTC Paper Trading — Dashboard
 
-PWA (React + Vite) que lee el track record publicado del Google Sheet y grafica la
-estrategia (trend-following + volatility-targeting) contra buy & hold. Instalable y
-con caché offline del último dato.
+PWA (React + Vite) que lee las pestañas publicadas del Google Sheet y muestra el
+registro en vivo de v2.1 (oficial), V3 (challenger) y v2.0 (legado).
+
+## Qué muestra
+
+- **Precios de giro**: qué cierre de mañana dispara una compra o venta, por versión (pestaña `next_levels`).
+- **Salud de las corridas**: última corrida, OK o FORK, atraso del cron, historial de 30 corridas (`meta_runs`, `meta_runs_v3`).
+- **Capital con rango esperado**: la curva real contra el 50% y 90% central de 4.000 trayectorias
+  simuladas con los retornos diarios 2022–2026 del backtest (`src/cone.json`, lo genera `research/build_cone.py`).
+- **Comparación de versiones** rebasadas a una fecha común.
+- **Caída desde el máximo** contra HODL y **exposición** (peso real escalonado vs señal).
+- **Operaciones y costo acumulado**, con lo que costaría a 40 pb (retail).
+- **Ejecución**: brecha entre el spot al correr y el cierre de la señal, contra el atraso del cron.
+
+## Configurar las fuentes
+
+Publica cada pestaña como CSV (Archivo → Compartir → Publicar en la web → pestaña → CSV)
+y define estas variables en Vercel (**Settings → Environment Variables**), luego **Redeploy**:
+
+| Variable | Pestaña |
+|---|---|
+| `VITE_CSV_V21` | `track_record_v21` |
+| `VITE_CSV_V3` | `track_record_v3` |
+| `VITE_CSV_V20` | `track_record` |
+| `VITE_CSV_META` | `meta_runs` |
+| `VITE_CSV_META_V3` | `meta_runs_v3` |
+| `VITE_CSV_LEVELS` | `next_levels` |
+
+También puedes pegarlas en la app con **Fuentes de datos**; quedan guardadas solo en ese
+navegador. La app reconoce cada pestaña por sus columnas: si un link apunta a otra pestaña
+de registro, la reasigna y lo avisa.
+
+> Las variables `VITE_*` quedan dentro del bundle. Los links CSV publicados ya son públicos.
 
 ## Local
 
 ```bash
 npm install
-cp .env.example .env      # y pega tu link CSV en VITE_CSV_URL
-npm run dev               # http://localhost:5173
+cp .env.example .env.local   # pega los links
+npm run dev                  # http://localhost:5173
 ```
 
-Sin `VITE_CSV_URL`, la app arranca con datos demo. También puedes pegar el link a
-mano en el campo de arriba y darle **Load**.
+## Después de un deploy
 
-## Conseguir el link CSV
-
-En el Google Sheet: **Archivo → Compartir → Publicar en la web → pestaña
-`track_record` → CSV → Publicar**. Copia el link (`https://docs.google.com/…/pub?output=csv`).
-
-## Desplegar en Vercel
-
-1. Sube esta carpeta a un repo (propio o subcarpeta del repo `Btc`).
-2. En Vercel: **New Project → Import** ese repo.
-   - Si está en una subcarpeta, pon esa carpeta en **Root Directory**.
-   - Framework: **Vite** (se autodetecta). Build: `npm run build`. Output: `dist`.
-3. En **Settings → Environment Variables** agrega:
-   - `VITE_CSV_URL` = tu link CSV publicado.
-4. **Deploy**. La app carga el track record sola al abrir.
-
-> Las variables `VITE_*` se incrustan en el bundle del cliente en build. El link CSV
-> ya es público, así que no es un secreto — pero por eso mismo no pongas nada sensible
-> con prefijo `VITE_`.
-
-## Instalar como app
-
-Abre la URL de Vercel en el navegador → menú → **Instalar app** (o "Añadir a pantalla
-de inicio" en móvil). Funciona offline mostrando el último dato cacheado.
-
-## Build
-
-```bash
-npm run build      # genera dist/ + service worker (PWA)
-npm run preview    # sirve dist/ localmente para probar la PWA
-```
+La PWA se actualiza sola, pero el service worker puede servir la versión anterior en la
+primera carga. Si ves la versión vieja, recarga dos veces o cierra y abre la app.

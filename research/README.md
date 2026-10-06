@@ -13,6 +13,7 @@ python run_is.py      # in-sample 2014–2021 (selección)
 python run_oos.py     # fuera de muestra 2022–2026, bootstrap, Sharpe deflactado
 python run_wf.py      # walk-forward de parámetros
 python run_exec.py    # sensibilidad al atraso de ejecución
+python build_cone.py  # rango esperado del dashboard (dashboard/src/cone.json)
 ```
 
 `PREREG_v3_candidatos.md` fija candidatos y regla de selección antes de mirar OOS.
